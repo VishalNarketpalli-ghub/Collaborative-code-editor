@@ -13,13 +13,14 @@ import roomRoutes from './routes/roomRoutes.js'
 
 dotenv.config()
 const app = express()
-app.use(cors)
+app.use(cors())
 app.use(express.json())
 
-app.use("/api/auth",authRoutes)
-app.use("/api/auth",chatRoutes)
-app.use("/api/auth",codeRoutes)
-app.use("/api/auth",roomRoutes)
+app.use("/api/auth", authRoutes)
+app.use("/api/chat", chatRoutes)
+app.use("/api/code", codeRoutes)
+app.use("/api/room", roomRoutes)
+
 
 
 const server = http.createServer(app)
@@ -29,6 +30,6 @@ connectDB()
 initSocket(server)
 
 
-server.listen(process.env.PORT,()=>{
+server.listen(process.env.PORT, () => {
     console.log(`server is running on port ${process.env.PORT}`)
 })

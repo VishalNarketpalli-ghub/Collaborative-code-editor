@@ -1,18 +1,18 @@
-import chatSocket from "./chatSocket"
-import codeSocket from "./codeSocket"
-import cursorSocket from "./cursorSocket"
+import chatSocket from "./chatSocket.js"
+import codeSocket from "./codeSocket.js"
+import cursorSocket from "./cursorSocket.js"
 
-const socketHandler = (io) =>{
-    
-    io.on("connection",(socket)=>{
-        console.log("User Connected:",socket.id)
+const socketHandler = (io) => {
 
-        codeSocket(io,socket)
-        cursorSocket(io,socket)
-        chatSocket(io,socket)
+    io.on("connection", (socket) => {
+        console.log("User Connected:", socket.id)
 
-        socket.on("disconnect",()=>{
-            console.log("User disconnected: ",socket.id)
+        codeSocket(io, socket)
+        cursorSocket(io, socket)
+        chatSocket(io, socket)
+
+        socket.on("disconnect", () => {
+            console.log("User disconnected: ", socket.id)
         })
     })
 }
