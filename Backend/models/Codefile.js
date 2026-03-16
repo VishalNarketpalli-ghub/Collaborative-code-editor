@@ -1,36 +1,38 @@
 import { Schema, model } from "mongoose";
 
 const codeFileSchema = new Schema(
-{
-    room: {
-        type: Schema.Types.ObjectId,
-        ref: "Room",
-        required: true
-    },
+    {
+        room: {
+            type: Schema.Types.ObjectId,
+            ref: "Room",
+            required: true
+        },
 
-    filename: {
-        type: String,
-        default: "main.js"
-    },
+        filename: {
+            type: String,
+            default: "main.js"
+        },
 
-    language: {
-        type: String,
-        default: "javascript"
-    },
+        language: {
+            type: String,
+            default: "javascript"
+        },
 
-    content: {
-        type: String,
-        default: ""
-    },
+        content: {
+            type: String,
+            default: ""
+        },
 
-    lastEditedBy: {
-        type: Schema.Types.ObjectId,
-        ref: "user"
+        lastEditedBy: {
+            type: Schema.Types.ObjectId,
+            ref: "user"
+        }
+    },
+    {
+        timestamps: true
     }
-},
-{
-    timestamps: true
-}
 );
 
-export default Code = model("CodeFile", codeFileSchema);
+const CodeFile = model("CodeFile", codeFileSchema);
+
+export default CodeFile;

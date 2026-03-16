@@ -19,9 +19,9 @@ const roomSchema = Schema({
         type: String,
         default: "Python"
     },
-    password:{
-        type:String,
-        default:""
+    password: {
+        type: String,
+        default: ""
     },
 
     participants: [
@@ -30,8 +30,10 @@ const roomSchema = Schema({
             ref: "user"
         }
     ]
-},{
-    timestamps:true
+}, {
+    timestamps: true
 })
 
-export default Room = model("room",roomSchema)
+const Room = model("room", roomSchema);
+
+export default Room;

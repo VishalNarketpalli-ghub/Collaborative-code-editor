@@ -1,0 +1,55 @@
+### Register User
+POST http://localhost:6600/api/auth/register
+Content-Type: application/json
+
+{
+    "username": "test1",
+    "email": "test1@gmail.com",
+    "password": "123"
+}
+
+
+
+### Login User
+POST http://localhost:6600/api/auth/login
+Content-Type: application/json
+
+{
+    "email": "test1@gmail.com",
+    "password": "123"
+}
+
+
+
+### Logout user -> authController.js
+
+
+
+
+### Get current user -> authController.js
+
+
+
+
+### Room creation
+POST http://localhost:6600/api/room/create
+Content-Type: application/json
+
+{
+    "title": "NewRoom",
+    "password": "123",
+    "language": "JavaScript",
+    "userId": "69b83db6c7f00862106e660a"
+}
+
+
+
+### Room Joining
+POST http://localhost:6600/api/room/join
+Content-Type: application/json
+
+{
+    "roomId": "vi9588",
+    "password": "123",
+    "userId": "69b83db6c7f00862106e660a"
+}
