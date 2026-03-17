@@ -1,18 +1,18 @@
-import Room from '../models/Room.js'
+import Room from '../models/Room.js';
+import User from '../models/User.js'; // import user model
 
-// Rout for creating room
+// Create Room
 export const createRoom = async (req, res) => {
     try {
-        // destructure 
-        // later fetch the userId from valisate middleware
-        const { title, password, language, userId } = req.body
+        // Get userId from token (secure way)
+        const userId = req.user.userId;
 
-        // const userId = req.user.id
+        const { title, password, language } = req.body;
 
-        // generate a room id
-        const roomId = Math.random().toString(36).substring(2, 8)
+        // Generate roomId
+        const roomId = Math.random().toString(36).substring(2, 8);
 
-        // create a room
+        // Create room
         const room = await Room.create({
             roomId,
             title,
@@ -22,60 +22,65 @@ export const createRoom = async (req, res) => {
             language
         });
 
-        // send response
-        res.status(201).json(room)
+        // Add this room to user's rooms list
+        await User.findByIdAndUpdate(userId, {
+            $addToSet: { rooms: room._id } // prevents duplicates
+        });
+
+        res.status(201).json(room);
+
     } catch (err) {
-
-        // handle errors
-        res.status(500).json({ message: err.message })
+        res.status(500).json({ message: err.message });
     }
-}
+};
 
-// Rout for joining
+
+// Join Room
 export const joinRoom = async (req, res) => {
     try {
+        // Get userId from token (secure)
+        const userId = req.user.userId;
 
-        // Destructre inputs
-        const { roomId, password, userId } = req.body;
-        // const userId = req.user.id;
-        // complete this after verification middlewear
+        const { roomId, password } = req.body;
 
-        // finsing room by id
+        // Find room
         const room = await Room.findOne({ roomId });
 
-        // handeling room dosent exist case
         if (!room) {
             return res.status(404).json({ message: "Room not found" });
         }
 
-        // validating password
+        // Validate password
         if (room.password && room.password !== password) {
             return res.status(401).json({ message: "Incorrect room password" });
         }
 
-        // pushing the particicipates in to use array
+        // Add user to room participants
         if (!room.participants.includes(userId)) {
             room.participants.push(userId);
             await room.save();
         }
 
-        // send response
+        // Add room to user's rooms list
+        await User.findByIdAndUpdate(userId, {
+            $addToSet: { rooms: room._id }
+        });
+
         res.status(200).json(room);
 
     } catch (error) {
-
-        // handle errors
         res.status(500).json({ message: error.message });
     }
 };
 
-// rout for fetching room details
+
+// Get Room Details
 export const getRoom = async (req, res) => {
     try {
-
         const { roomId } = req.params;
 
-        const room = await Room.findOne({ roomId }).populate("participants", "username");
+        const room = await Room.findOne({ roomId })
+            .populate("participants", "username");
 
         if (!room) {
             return res.status(404).json({ message: "Room not found" });
@@ -86,4 +91,4 @@ export const getRoom = async (req, res) => {
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
-}
+};
