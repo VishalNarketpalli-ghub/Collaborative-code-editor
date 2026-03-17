@@ -42,4 +42,7 @@ export default function codeSocket(io, socket) {
 
     })
 
+    socket.on("code_change", ({ roomId, code }) => {
+        socket.to(roomId).emit("code_update", code)
+    })
 }
