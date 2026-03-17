@@ -3,119 +3,187 @@ import * as monaco from "monaco-editor";
 import { FiShare2 } from "react-icons/fi";
 
 function MonacoEditor({ isRoomCreator, language, setLanguage, roomId }) {
-  const editorRef = useRef(null);
-  const editorInstance = useRef(null);
+    // Reference to the DOM element where Monaco will be mounted
+    const editorRef = useRef(null);
 
-  const roomLink = `${window.location.origin}/room/${roomId}`;
+    // Reference to store Monaco editor instance
+    const editorInstance = useRef(null);
 
-  useEffect(() => {
-    editorInstance.current = monaco.editor.create(editorRef.current, {
-      value: "// Start coding...",
-      language: language,
-      theme: "vs-dark",
-      automaticLayout: true
-    });
+    // Room link used for sharing
+    const roomLink = `${window.location.origin}/room/${roomId}`;
 
-    return () => editorInstance.current.dispose();
-  }, []);
+    // Initialize Monaco Editor only once when component mounts
+    useEffect(() => {
+        editorInstance.current = monaco.editor.create(editorRef.current, {
+            value: "// Start coding...", // Default content
+            language: language, // Initial language
+            theme: "vs-dark", // Dark theme
+            automaticLayout: true, // Auto resize on container change
 
-  useEffect(() => {
-    if (editorInstance.current) {
-      monaco.editor.setModelLanguage(
-        editorInstance.current.getModel(),
-        language
-      );
-    }
-  }, [language]);
+            // Disable minimap for cleaner UI
+            minimap: { enabled: false },
 
-  const changeLanguage = (e) => {
-    setLanguage(e.target.value);
-  };
+            // Prevent extra empty space after last line
+            scrollBeyondLastLine: false,
 
-  const shareRoomLink = async () => {
-    try {
-      await navigator.clipboard.writeText(roomLink);
-      alert("Room link copied to clipboard!");
-    } catch {
-      alert("Failed to copy link");
-    }
-  };
+            // Smooth scrolling experience
+            smoothScrolling: true,
 
-  const endSession = async () =>  {
+            // Scrollbar customization
+            scrollbar: {
+                vertical: "visible",
+                horizontal: "visible",
+                useShadows: false,
+                verticalScrollbarSize: 8,
+                horizontalScrollbarSize: 8,
+            },
+        });
 
-  }
-  return (
-    <div className="flex h-125">
+        // Cleanup editor on component unmount
+        return () => editorInstance.current.dispose();
+    }, []);
 
-      {/* Editor Section */}
-      <div className="w-3/5 flex flex-col">
+    // Update editor language dynamically when language state changes
+    useEffect(() => {
+        if (editorInstance.current) {
+            monaco.editor.setModelLanguage(
+                editorInstance.current.getModel(),
+                language,
+            );
+        }
+    }, [language]);
 
-        <div className="p-1 bg-[#1e1e1e]">
-          {isRoomCreator ? (
-            <select
-              value={language}
-              onChange={changeLanguage}
-              className="bg-black text-white px-2 py-1 rounded"
-            >
-              <option value="javascript">JavaScript</option>
-              <option value="python">Python</option>
-              <option value="cpp">C++</option>
-              <option value="java">Java</option>
-            </select>
-          ) : (
-            <span className="text-white px-2 py-1 bg-black rounded">
-              {language}
-            </span>
-          )}
+    // Handle language dropdown change
+    const changeLanguage = (e) => {
+        setLanguage(e.target.value);
+    };
+
+    // Copy room link to clipboard
+    const shareRoomLink = async () => {
+        try {
+            await navigator.clipboard.writeText(roomLink);
+            alert("Room link copied to clipboard!");
+        } catch {
+            alert("Failed to copy link");
+        }
+    };
+
+    // Placeholder for ending session logic
+    const endSession = async () => {};
+
+    return (
+        // Main container using responsive grid
+        // 1 column on mobile, 2 columns on medium screens and above
+        <div className="h-screen grid grid-cols-1 md:grid-cols-2">
+            {/* LEFT SIDE → MONACO CODE EDITOR */}
+            <div className="flex flex-col border-r border-gray-700 overflow-hidden">
+                {/* Top bar containing language selector and action buttons */}
+                <div className="p-2 bg-[#1e1e1e] flex justify-between items-center">
+                    {/* LEFT SECTION → Language Selector */}
+                    <div>
+                        {isRoomCreator ? (
+                            // Room creator can change language
+                            <select
+                                value={language}
+                                onChange={changeLanguage}
+                                className="bg-black text-white px-2 py-1 rounded"
+                            >
+                                <option value="javascript">JavaScript</option>
+                                <option value="python">Python</option>
+                                <option value="cpp">C++</option>
+                                <option value="java">Java</option>
+                            </select>
+                        ) : (
+                            // Other users can only view selected language
+                            <span className="text-white px-2 py-1 bg-black rounded">
+                                {language}
+                            </span>
+                        )}
+                    </div>
+
+                    {/* RIGHT SECTION → Share, Run, Clear buttons */}
+                    <div className="flex items-center gap-2">
+                        {/* Share Room Button */}
+                        <button
+                            onClick={shareRoomLink}
+                            className="p-2 rounded hover:bg-gray-700"
+                        >
+                            <FiShare2 size={18} />
+                        </button>
+
+                        {/* Run Code Button */}
+                        <button className="px-3 py-1 bg-green-600 rounded hover:bg-green-700">
+                            Run
+                        </button>
+
+                        {/* Clear Output Button */}
+                        <button className="px-3 py-1 bg-red-600 rounded hover:bg-red-700">
+                            Clear
+                        </button>
+                    </div>
+                </div>
+
+                {/* Monaco Editor Container */}
+                {/* flex-1 ensures it takes remaining height */}
+                {/* min-h-0 fixes overflow issues in flex/grid */}
+                {/* overflow-hidden prevents unwanted scrollbars */}
+                <div className="flex-1 min-h-0 overflow-hidden">
+                    <div ref={editorRef} className="h-full w-full" />
+                </div>
+            </div>
+
+            {/* RIGHT SIDE → CHAT + OUTPUT */}
+            {/* Split into two rows */}
+            <div className="grid grid-rows-2 md:grid-rows-2 h-full">
+                {/* TOP RIGHT → CHAT SECTION */}
+                <div className="border-b border-gray-700 bg-[#111] text-white flex flex-col">
+                    {/* Chat header */}
+                    <div className="p-2 font-semibold border-b border-gray-700">
+                        Chat
+                    </div>
+
+                    {/* Chat messages area */}
+                    {/* overflow-y-auto enables scrolling */}
+                    <div className="flex-1 p-2 overflow-y-auto">
+                        Messages will appear here
+                    </div>
+
+                    {/* Chat input section */}
+                    <div className="p-2 border-t border-gray-700 flex gap-2">
+                        <input
+                            type="text"
+                            placeholder="Type message..."
+                            className="flex-1 px-2 py-1 bg-black text-white rounded"
+                        />
+                        <button className="px-3 py-1 bg-blue-600 rounded">
+                            Send
+                        </button>
+                    </div>
+                </div>
+
+                {/* BOTTOM RIGHT → OUTPUT SECTION */}
+                <div className="bg-[#111] text-white flex flex-col">
+                    {/* Output header with end session button */}
+                    <div className="p-2 flex justify-between items-center border-b border-gray-700">
+                        <h3 className="font-semibold">Output</h3>
+
+                        <button
+                            onClick={endSession}
+                            className="px-2 py-1 bg-red-600 rounded"
+                        >
+                            End
+                        </button>
+                    </div>
+
+                    {/* Output display area */}
+                    {/* overflow-auto allows scrolling when output is large */}
+                    <div className="flex-1 p-2 border-b border-gray-700 overflow-auto">
+                        Output will appear here
+                    </div>
+                </div>
+            </div>
         </div>
-
-        <div
-          ref={editorRef}
-          className="flex-1 border-r-2 border-gray-700"
-        />
-      </div>
-
-      {/* Output Section */}
-      <div className="w-2/5 bg-[#111] text-white p-3 flex flex-col">
-
-        {/* Header */}
-        <div className="flex justify-between items-center mb-2">
-          
-          <h3 className="text-lg font-semibold">Output</h3>
-
-          <div className="flex justify-between gap-2">
-          <button onClick={endSession}
-            className="p-2  bg-red-600 rounded hover:bg-red-700"
-            title="End session">End session</button>
-
-          <button
-            onClick={shareRoomLink}
-            className="p-2 rounded hover:bg-gray-700"
-            title="Share Room"
-          >
-            <FiShare2 size={18} />
-          </button>
-          </div>
-        </div>
-
-        <div className="flex-1 border border-gray-700 mb-3 p-3">
-          Output will appear here
-        </div>
-
-        <div className="flex gap-2">
-          <button className="px-3 py-1 bg-green-600 rounded hover:bg-green-700">
-            Run
-          </button>
-
-          <button className="px-3 py-1 bg-red-600 rounded hover:bg-red-700">
-            Clear
-          </button>
-        </div>
-
-      </div>
-
-    </div>
-  );
+    );
 }
 
 export default MonacoEditor;
