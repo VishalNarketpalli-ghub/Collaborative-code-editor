@@ -1,9 +1,8 @@
 import express from 'express'
+import { getChatHistory } from '../controllers/chatController.js'
 
 const router = express.Router()
 
-router.get("/:roomId", (req, res) => {
-	res.status(501).json({ message: "Chat route handler not implemented yet" })
-})
+router.get("/:roomId",getChatHistory)
 
 export default router

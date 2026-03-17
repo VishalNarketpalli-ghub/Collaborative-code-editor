@@ -1,9 +1,9 @@
 import express from 'express'
+import { getCode, saveCode } from '../controllers/codeController.js'
 
 const router = express.Router()
 
-router.get("/:roomId", (req, res) => {
-	res.status(501).json({ message: "Code route handler not implemented yet" })
-})
+router.get("/:roomId",getCode)
+router.put("/:roomId",saveCode)
 
 export default router
