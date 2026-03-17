@@ -23,7 +23,7 @@ Content-Type: application/json
 
 ### Logout user -> authController.js
 POST http://localhost:6600/api/auth/logout
-Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2OWI4ZTAyODQ0MjE2ZDI1YmQyMjJlMjQiLCJlbWFpbCI6InRlc3QxQGdtYWlsLmNvbSIsImlhdCI6MTc3MzcyNjYxMiwiZXhwIjoxNzczNzMwMjEyfQ.uLNdr4-xPrVqrf3p1SJMoOnxq5msTFYZObXtPEJGGn0
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2OWI5MTIwZmYzM2MzMjgzYjdhODY4NzUiLCJlbWFpbCI6InRlc3QyQGdtYWlsLmNvbSIsImlhdCI6MTc3MzczNjQ4OSwiZXhwIjoxNzczNzQwMDg5fQ.VSdJpaQ8EMPE_rQf3ROVHYiWwzqcUuQQtKPDX9mgg70
 
 
 
