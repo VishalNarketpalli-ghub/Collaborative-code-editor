@@ -1,13 +1,15 @@
 import ChatMessage from "../models/chatMessage.js";
+import Room from "../models/Room.js";
 
 export default function chatSocket(io, socket) {
 
     socket.on("send-message", async ({ roomId, message }) => {
 
         const userId = socket.user.id;
+        const room = await Room.findOne({roomId})
 
         const chat = await ChatMessage.create({
-            room: roomId,
+            room: room._id,
             sender: userId,
             message
         });

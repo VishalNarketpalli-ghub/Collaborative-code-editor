@@ -1,36 +1,8 @@
 import { Server } from "socket.io";
 import socketHandler from "./socketHandler.js";
+import jwt from 'jsonwebtoken'
 
 const initSocket = (server) => {
-<<<<<<< HEAD
-  const io = new Server(server, {
-    cors: {
-      origin: "https://localhost:5173", credentials: true
-    }
-  });
-
-  io.use((socket, next) => {
-    try {
-      const token = socket.handshake.auth?.token;
-
-      if (!token) {
-        return next(new Error("No token provided"));
-      }
-
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-      socket.user = {
-        id: decoded.userId
-      };
-
-      next();
-    } catch (err) {
-      next(new Error("Authentication failed"));
-    }
-  });
-
-  socketHandler(io);
-=======
     const io = new Server(server, {
         cors: {
             origin: "https://localhost:5173", credentials: true
@@ -58,7 +30,6 @@ const initSocket = (server) => {
     });
 
     socketHandler(io);
->>>>>>> 442000189ba0aceedded1f22f4250b1832d25134
 };
 
 export default initSocket;

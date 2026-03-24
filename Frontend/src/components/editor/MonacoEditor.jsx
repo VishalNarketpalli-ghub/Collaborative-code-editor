@@ -1,8 +1,16 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as monaco from "monaco-editor";
 import { FiShare2 } from "react-icons/fi";
+import { useSocket } from '../../context/SocketContext'
+import { LANGUAGE_MAP } from '../../utils/languageMap'
 
 function MonacoEditor({ isRoomCreator, language, setLanguage, roomId }) {
+
+    const socket = useSocket()
+
+    const [output, setOutput] = useState("");
+    const [input, setInput] = useState("");
+
     // Reference to the DOM element where Monaco will be mounted
     const editorRef = useRef(null);
 
@@ -53,6 +61,35 @@ function MonacoEditor({ isRoomCreator, language, setLanguage, roomId }) {
         }
     }, [language]);
 
+    useEffect(() => {
+        if (!socket) return;
+
+        socket.on("execution_status", (msg) => {
+            setOutput(msg);
+        });
+
+        socket.on("code_output", (data) => {
+            setOutput(
+                data.output || data.error || data.compile_output || data.status
+            );
+        });
+
+        return () => {
+            socket.off("execution_status");
+            socket.off("code_output");
+        };
+    }, [socket]);
+
+    useEffect(() => {
+        if (!socket) return;
+
+        socket.emit("join-room", {
+            roomId,
+            password: "" // or actual password if used
+        });
+
+    }, [socket, roomId]);
+
     // Handle language dropdown change
     const changeLanguage = (e) => {
         setLanguage(e.target.value);
@@ -68,8 +105,19 @@ function MonacoEditor({ isRoomCreator, language, setLanguage, roomId }) {
         }
     };
 
+    const runCode = () => {
+        const code = editorInstance.current.getValue();
+
+        socket.emit("run_code", {
+            roomId,
+            source_code: code,
+            language_id: LANGUAGE_MAP[language],
+            stdin: input || ""
+        });
+    };
+
     // Placeholder for ending session logic
-    const endSession = async () => {};
+    const endSession = async () => { };
 
     return (
         // Main container using responsive grid
@@ -112,7 +160,7 @@ function MonacoEditor({ isRoomCreator, language, setLanguage, roomId }) {
                         </button>
 
                         {/* Run Code Button */}
-                        <button className="px-3 py-1 bg-green-600 rounded hover:bg-green-700">
+                        <button onClick={runCode} className="px-3 py-1 bg-green-600 rounded hover:bg-green-700">
                             Run
                         </button>
 
@@ -178,7 +226,7 @@ function MonacoEditor({ isRoomCreator, language, setLanguage, roomId }) {
                     {/* Output display area */}
                     {/* overflow-auto allows scrolling when output is large */}
                     <div className="flex-1 p-2 border-b border-gray-700 overflow-auto">
-                        Output will appear here
+                        <pre>{output}</pre>
                     </div>
                 </div>
             </div>

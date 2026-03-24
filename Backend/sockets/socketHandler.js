@@ -11,9 +11,17 @@ const socketHandler = (io) => {
         cursorSocket(io, socket)
         chatSocket(io, socket)
 
-        socket.on("disconnect", () => {
-            console.log("User disconnected: ", socket.id)
-        })
+        socket.on("disconnecting", () => {
+            const rooms = [...socket.rooms];
+
+            rooms.forEach((roomId) => {
+                if (roomId !== socket.id) {
+                    socket.to(roomId).emit("user_left", {
+                        userId: socket.user.id
+                    });
+                }
+            });
+        });
     })
 }
 

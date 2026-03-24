@@ -1,4 +1,5 @@
 import Room from "../models/Room.js";
+import { runCode } from "../services/executeService.js";
 
 export default function codeSocket(io, socket) {
 
@@ -45,5 +46,28 @@ export default function codeSocket(io, socket) {
     // CODE SYNC
     socket.on("code_change", ({ roomId, code }) => {
         socket.to(roomId).emit("code_update", code);
+    });
+
+    //RUN CODE
+    socket.on("run_code", async ({ roomId, source_code, language_id, stdin }) => {
+        try {
+            // show running status
+            io.to(roomId).emit("execution_status", "Running...");
+
+            const result = await runCode(source_code, language_id, stdin);
+
+            // send result to ALL users
+            io.to(roomId).emit("code_output", {
+                output: result.stdout,
+                error: result.stderr,
+                compile_output: result.compile_output,
+                status: result.status.description
+            });
+
+        } catch (err) {
+            io.to(roomId).emit("code_output", {
+                error: "Execution failed"
+            });
+        }
     });
 }

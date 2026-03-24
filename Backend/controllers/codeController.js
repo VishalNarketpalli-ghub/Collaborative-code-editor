@@ -9,7 +9,7 @@ export const getCode = async (req, res) => {
         if (!room) {
             return res.status(404).json({ message: "Room Not found" })
         }
-        let codeFile = await CodeFile.findOne({ room: roomId })
+        let codeFile = await CodeFile.findOne({ room: room._id })
 
         if (!codeFile) {
             codeFile = await CodeFile.create({
