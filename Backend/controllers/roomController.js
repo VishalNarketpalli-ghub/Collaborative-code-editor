@@ -92,3 +92,27 @@ export const getRoom = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+// Get User Rooms History
+export const getUserRooms = async (req, res) => {
+    try {
+        const userId = req.user.userId;
+
+        const user = await User.findById(userId).populate({
+            path: "rooms",
+            options: { sort: { createdAt: -1 } },
+            populate: [
+                { path: "createdBy", select: "username email" },
+                { path: "participants", select: "username email" }
+            ]
+        });
+
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        res.status(200).json(user.rooms);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};

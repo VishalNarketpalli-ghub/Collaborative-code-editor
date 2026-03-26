@@ -37,11 +37,6 @@ function App() {
                 },
 
                 {
-                    path: "room/:roomId",
-                    element: <EditorPage />,
-                },
-
-                {
                     path: "login",
                     element: <Login />,
                 },
@@ -59,6 +54,10 @@ function App() {
                     element: <Profile />,
                 },
             ],
+        },
+        {
+            path: "/room/:roomId",
+            element: <EditorPage />,
         },
     ]);
 

@@ -26,7 +26,7 @@ function CreateRoom() {
 
             const room = res.data;
 
-            // ✅ Navigate to editor page
+            // Navigate to editor page
             navigate(`/room/${room.roomId}`, {
                 state: {
                     language: room.language,

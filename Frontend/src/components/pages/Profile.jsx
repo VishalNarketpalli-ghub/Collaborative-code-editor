@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
+import API from "../../utils/axios";
 
 function Profile() {
     const navigate = useNavigate();
@@ -10,6 +11,33 @@ function Profile() {
 
     // State for animation visibility
     const [visible, setVisible] = useState(false);
+    
+    // State for room history
+    const [rooms, setRooms] = useState([]);
+    const [loadingRooms, setLoadingRooms] = useState(false);
+
+    // Fetch rooms history
+    useEffect(() => {
+        if (user) {
+            const fetchRooms = async () => {
+                setLoadingRooms(true);
+                try {
+                    const { data } = await API.get("/room/history");
+                    if (Array.isArray(data)) {
+                        setRooms(data);
+                    } else {
+                        console.error("Expected array but got:", data);
+                        setRooms([]);
+                    }
+                } catch (error) {
+                    console.error("Failed to fetch rooms:", error);
+                } finally {
+                    setLoadingRooms(false);
+                }
+            };
+            fetchRooms();
+        }
+    }, [user]);
 
     // Trigger animation on mount
     useEffect(() => {
@@ -114,11 +142,11 @@ function Profile() {
                 <div className="border-t border-gray-800 my-16"></div>
 
                 {/* Actions Section */}
-                <div className="flex flex-wrap gap-4">
+                <div className="flex flex-wrap gap-4 mb-16">
                     {/* Create Room Button */}
                     <button
                         onClick={() => navigate("/create-room")}
-                        className="px-8 py-3 rounded-full bg-linear-to-r from-blue-500 to-purple-600 hover:scale-105 transition transform"
+                        className="px-8 py-3 rounded-full bg-linear-to-r from-blue-500 to-purple-600 hover:scale-105 transition transform cursor-pointer"
                     >
                         Create Room
                     </button>
@@ -126,10 +154,64 @@ function Profile() {
                     {/* Join Room Button */}
                     <button
                         onClick={() => navigate("/join-room")}
-                        className="px-8 py-3 rounded-full bg-gray-800 hover:bg-gray-700 transition"
+                        className="px-8 py-3 rounded-full bg-gray-800 hover:bg-gray-700 transition cursor-pointer"
                     >
                         Join Room
                     </button>
+                </div>
+
+                {/* Room History Section */}
+                <div>
+                    <h3 className="text-2xl font-semibold mb-6">Room History</h3>
+                    
+                    {loadingRooms ? (
+                        <div className="text-gray-400">Loading your history...</div>
+                    ) : rooms.length === 0 ? (
+                        <div className="text-gray-500 bg-gray-900/50 p-6 rounded-xl border border-gray-800 text-center">
+                            You haven't joined or created any rooms yet.
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                            {rooms.map((room) => (
+                                <div key={room._id} className="bg-gray-900 border border-gray-800 p-6 rounded-2xl hover:border-gray-600 transition-colors shadow-lg flex flex-col">
+                                    <div className="flex justify-between items-start mb-4">
+                                        <h4 className="text-xl font-bold bg-linear-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent truncate pr-2">
+                                            {room.title || "Untitled Room"}
+                                        </h4>
+                                        <span className="text-xs bg-gray-800 px-2 py-1 rounded text-gray-300 shrink-0 capitalize">
+                                            {room.language}
+                                        </span>
+                                    </div>
+                                    
+                                    <div className="text-sm text-gray-400 space-y-2 flex-grow">
+                                        <div className="flex justify-between">
+                                            <span>Room ID:</span>
+                                            <span className="text-gray-200 font-mono bg-gray-800 px-1 rounded">{room.roomId}</span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>Host:</span>
+                                            <span className="text-gray-200">{room.createdBy?.username || "Unknown"}</span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>Participants:</span>
+                                            <span className="text-gray-200">{room.participants?.length || 0}</span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>Date:</span>
+                                            <span className="text-gray-200">{new Date(room.createdAt).toLocaleDateString()}</span>
+                                        </div>
+                                    </div>
+                                    
+                                    <button 
+                                        onClick={() => navigate(`/room/${room.roomId}`)}
+                                        className="mt-6 w-full py-2 bg-gray-800 hover:bg-blue-600 rounded-lg text-sm font-semibold transition-colors cursor-pointer"
+                                    >
+                                        Rejoin Room
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </div>
             </div>
         </div>
