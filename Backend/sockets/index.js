@@ -4,7 +4,9 @@ import socketHandler from "./socketHandler.js";
 const initSocket = (server) => {
     const io = new Server(server, {
         cors: {
-            origin: "https://localhost:5173", credentials: true
+            origin: ["http://localhost:5173"],
+            methods: ["GET", "POST"],
+            credentials: true,
         }
     });
 
