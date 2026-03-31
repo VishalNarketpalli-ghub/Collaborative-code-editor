@@ -34,9 +34,10 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2OWI4Z
 ### Room creation
 POST http://localhost:6600/api/room/create
 Content-Type: application/json
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2OWI5MTIwZmYzM2MzMjgzYjdhODY4NzUiLCJlbWFpbCI6InRlc3QyQGdtYWlsLmNvbSIsImlhdCI6MTc3NDMzMTE1NSwiZXhwIjoxNzc0MzM0NzU1fQ.GIaMKzcHM4qXmsHl-yHONa1accVYK1AX3C5YgHfjxPs
 
 {
-    "title": "NewRoom",
+    "title": "test1",
     "password": "123",
     "language": "JavaScript",
     "userId": "69b83db6c7f00862106e660a"
@@ -52,4 +53,16 @@ Content-Type: application/json
     "roomId": "vi9588",
     "password": "123",
     "userId": "69b83db6c7f00862106e660a"
+}
+
+
+### Compiler Req
+POST http://localhost:6600/api/compile/run
+Content-Type: application/json
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2OWI5MTIwZmYzM2MzMjgzYjdhODY4NzUiLCJlbWFpbCI6InRlc3QyQGdtYWlsLmNvbSIsImlhdCI6MTc3NDMzMTE1NSwiZXhwIjoxNzc0MzM0NzU1fQ.GIaMKzcHM4qXmsHl-yHONa1accVYK1AX3C5YgHfjxPs
+
+{
+  "code": "print('Hello World')",
+  "languageId": 71,
+  "input": ""
 }
