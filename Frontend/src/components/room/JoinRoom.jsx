@@ -43,7 +43,7 @@ function JoinRoom() {
         <div className="min-h-screen bg-gray-950 text-white flex flex-col">
             {/* Header */}
             <div className="px-6 md:px-16 py-6 border-b border-gray-800">
-                <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+                <h1 className="text-2xl font-bold bg-linear-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
                     Join Room
                 </h1>
             </div>
@@ -80,7 +80,7 @@ function JoinRoom() {
                     <button
                         onClick={joinRoom}
                         disabled={loading}
-                        className="w-full py-3 rounded-full text-lg bg-gradient-to-r from-blue-500 to-purple-600 hover:scale-105 transition transform shadow-lg disabled:opacity-50"
+                        className="w-full py-3 rounded-full text-lg bg-linear-to-r from-blue-500 to-purple-600 hover:scale-105 transition transform shadow-lg disabled:opacity-50"
                     >
                         {loading ? "Joining..." : "Join Room"}
                     </button>

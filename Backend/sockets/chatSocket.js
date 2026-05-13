@@ -16,4 +16,13 @@ export default function chatSocket(io, socket) {
 
         io.to(roomId).emit("receive_message", chat);
     });
+
+    socket.on("join_room",(roomId)=>{
+        socket.join(roomId)
+    })
+
+    socket.on("send_message",async(data)=>{
+        
+    })
 }
+
