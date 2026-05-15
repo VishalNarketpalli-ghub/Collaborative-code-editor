@@ -172,44 +172,80 @@ function Profile() {
                         </div>
                     ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                            {rooms.map((room) => (
-                                <div key={room._id} className="bg-gray-900 border border-gray-800 p-6 rounded-2xl hover:border-gray-600 transition-colors shadow-lg flex flex-col">
-                                    <div className="flex justify-between items-start mb-4">
-                                        <h4 className="text-xl font-bold bg-linear-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent truncate pr-2">
-                                            {room.title || "Untitled Room"}
-                                        </h4>
-                                        <span className="text-xs bg-gray-800 px-2 py-1 rounded text-gray-300 shrink-0 capitalize">
-                                            {room.language}
-                                        </span>
+                            {rooms.map((room) => {
+                                const isCreator = room.createdBy?._id === user?._id;
+
+                                const handleRejoin = async () => {
+                                    if (!room.isActive && isCreator) {
+                                        try {
+                                            await API.patch(`/room/${room.roomId}/reopen`);
+                                        } catch (err) {
+                                            alert(err.response?.data?.message || "Failed to reopen session");
+                                            return;
+                                        }
+                                    }
+                                    navigate(`/room/${room.roomId}`, {
+                                        state: { isHost: isCreator, language: room.language },
+                                    });
+                                };
+
+                                return (
+                                    <div key={room._id} className="bg-gray-900 border border-gray-800 p-6 rounded-2xl hover:border-gray-600 transition-colors shadow-lg flex flex-col">
+                                        <div className="flex justify-between items-start mb-4">
+                                            <h4 className="text-xl font-bold bg-linear-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent truncate pr-2">
+                                                {room.title || "Untitled Room"}
+                                            </h4>
+                                            <div className="flex items-center gap-2 shrink-0">
+                                                <span className="text-xs bg-gray-800 px-2 py-1 rounded text-gray-300 capitalize">
+                                                    {room.language}
+                                                </span>
+                                                {!room.isActive && (
+                                                    <span className="text-xs bg-red-900 text-red-300 px-2 py-1 rounded">Ended</span>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        <div className="text-sm text-gray-400 space-y-2 flex-grow">
+                                            <div className="flex justify-between">
+                                                <span>Room ID:</span>
+                                                <span className="text-gray-200 font-mono bg-gray-800 px-1 rounded">{room.roomId}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span>Host:</span>
+                                                <span className="text-gray-200">{room.createdBy?.username || "Unknown"}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span>Participants:</span>
+                                                <span className="text-gray-200">{room.participants?.length || 0}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span>Date:</span>
+                                                <span className="text-gray-200">{new Date(room.createdAt).toLocaleDateString()}</span>
+                                            </div>
+                                        </div>
+
+                                        {isCreator ? (
+                                            <button
+                                                onClick={handleRejoin}
+                                                className="mt-6 w-full py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-semibold transition-colors cursor-pointer"
+                                            >
+                                                {room.isActive ? "Rejoin Room" : "Reopen Session"}
+                                            </button>
+                                        ) : room.isActive ? (
+                                            <button
+                                                onClick={handleRejoin}
+                                                className="mt-6 w-full py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm font-semibold transition-colors cursor-pointer"
+                                            >
+                                                Rejoin Room
+                                            </button>
+                                        ) : (
+                                            <div className="mt-6 w-full py-2 bg-gray-800 rounded-lg text-sm font-semibold text-center text-gray-500 cursor-not-allowed">
+                                                Session Ended
+                                            </div>
+                                        )}
                                     </div>
-                                    
-                                    <div className="text-sm text-gray-400 space-y-2 flex-grow">
-                                        <div className="flex justify-between">
-                                            <span>Room ID:</span>
-                                            <span className="text-gray-200 font-mono bg-gray-800 px-1 rounded">{room.roomId}</span>
-                                        </div>
-                                        <div className="flex justify-between">
-                                            <span>Host:</span>
-                                            <span className="text-gray-200">{room.createdBy?.username || "Unknown"}</span>
-                                        </div>
-                                        <div className="flex justify-between">
-                                            <span>Participants:</span>
-                                            <span className="text-gray-200">{room.participants?.length || 0}</span>
-                                        </div>
-                                        <div className="flex justify-between">
-                                            <span>Date:</span>
-                                            <span className="text-gray-200">{new Date(room.createdAt).toLocaleDateString()}</span>
-                                        </div>
-                                    </div>
-                                    
-                                    <button 
-                                        onClick={() => navigate(`/room/${room.roomId}`)}
-                                        className="mt-6 w-full py-2 bg-gray-800 hover:bg-blue-600 rounded-lg text-sm font-semibold transition-colors cursor-pointer"
-                                    >
-                                        Rejoin Room
-                                    </button>
-                                </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     )}
                 </div>

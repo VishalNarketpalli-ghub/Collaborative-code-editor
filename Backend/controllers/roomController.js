@@ -50,6 +50,11 @@ export const joinRoom = async (req, res) => {
             return res.status(404).json({ message: "Room not found" });
         }
 
+        //Non-host cannot join an ended session
+        if (!room.isActive && room.createdBy.toString() !== userId) {
+            return res.status(403).json({ message: "This session has ended" })
+        }
+
         // Validate password
         if (room.password && room.password !== password) {
             return res.status(401).json({ message: "Incorrect room password" });
@@ -80,7 +85,8 @@ export const getRoom = async (req, res) => {
         const { roomId } = req.params;
 
         const room = await Room.findOne({ roomId })
-            .populate("participants", "username");
+            .populate("participants", "username email")
+            .populate("createdBy", "username email _id")
 
         if (!room) {
             return res.status(404).json({ message: "Room not found" });
@@ -102,7 +108,7 @@ export const getUserRooms = async (req, res) => {
             path: "rooms",
             options: { sort: { createdAt: -1 } },
             populate: [
-                { path: "createdBy", select: "username email" },
+                { path: "createdBy", select: "username email _id" },
                 { path: "participants", select: "username email" }
             ]
         });
@@ -116,3 +122,57 @@ export const getUserRooms = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+
+//end session : host only
+export const endSession = async (req, res) => {
+    try {
+        const userId = req.user.userId
+        const { roomId } = req.params
+
+        //finding the room
+        const room = await Room.findOne({ roomId })
+
+        //when room doesn't exist
+        if (!room) {
+            return res.status(404).json({ message: "Room not found" })
+        }
+
+        //checking is user is host
+        if (room.createdBy.toString() !== userId) {
+            return res.status(403).json({ message: "You are not authorized to end this session" })
+        }
+
+        //if the user is host and room exists
+        room.isActive = false
+        await room.save()
+        res.status(200).json({ message: "Session Ended" })
+    } catch (err) {
+        res.status(500).json({ message: err.message })
+    }
+}
+
+//reopen session : host only
+export const reopenSession = async (req, res) => {
+    try {
+        const userId = req.user.userId
+        const { roomId } = req.params
+
+        //finding room
+        const room = await Room.findOne({ roomId })
+
+        //if room not found
+        if (!room) return res.status(404).json({ message: "Room not found" })
+
+        //making sure user is host
+        if (room.createdBy.toString() !== userId) {
+            return res.status(403).json({ message: "Only the host can reopen the session" })
+        }
+
+        room.isActive = true
+        await room.save()
+        res.status(200).json(room)
+    }catch(err){
+        res.status(500).json({message: err.message})
+    }
+}

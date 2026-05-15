@@ -31,11 +31,13 @@ export default function codeSocket(io, socket) {
         });
     });
 
-    // LANGUAGE CHANGE
+    // LANGUAGE CHANGE : host only
     socket.on("language_change", async ({ roomId, language }) => {
 
+        const userId = socket.user.id
         const room = await Room.findOne({ roomId });
         if (!room) return;
+        if(room.createdBy.toString() !== userId) return
 
         room.language = language;
         await room.save();
@@ -48,26 +50,47 @@ export default function codeSocket(io, socket) {
         socket.to(roomId).emit("code_update", code);
     });
 
-    //RUN CODE
-    socket.on("run_code", async ({ roomId, source_code, language_id, stdin }) => {
+    //RUN CODE - broadcasting output to all users in room
+    socket.on("run_code", async ({ roomId, source_code, language, stdin }) => {
         try {
-            // show running status
             io.to(roomId).emit("execution_status", "Running...");
 
-            const result = await runCode(source_code, language_id, stdin);
+            const result = await runCode(source_code, language, stdin);
 
-            // send result to ALL users
-            io.to(roomId).emit("code_output", {
-                output: result.stdout,
-                error: result.stderr,
-                compile_output: result.compile_output,
-                status: result.status.description
-            });
+            if (result.statusCode === 200) {
+                io.to(roomId).emit("code_output", {
+                    stdout: result.output,
+                    stderr: "",
+                    exitCode: 0,
+                });
+            } else {
+                io.to(roomId).emit("code_output", {
+                    stdout: "",
+                    stderr: result.output || result.error || "Execution failed",
+                    exitCode: result.statusCode,
+                });
+            }
 
         } catch (err) {
+            console.error("Run code error:", err.message);
             io.to(roomId).emit("code_output", {
-                error: "Execution failed"
+                stderr: "Execution failed: " + err.message,
+                exitCode: 1,
             });
         }
     });
+
+    socket.on("end_session",async({roomId})=>{
+        
+        const userId = socket.user.id
+        const room = await Room.findOne({roomId})
+        if(!room) return
+        if(room.createdBy.toString() !== userId) return // only host
+
+        room.isActive = false
+        await room.save()
+
+        //broadcast to everyone in the room
+        io.to(roomId).emit("session_ended")
+    })
 }

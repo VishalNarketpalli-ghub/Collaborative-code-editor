@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import API from "../../utils/axios";
 
 function JoinRoom() {
-    const [roomId, setRoomId] = useState("");
+    const [searchParams] = useSearchParams();
+    const [roomId, setRoomId] = useState(searchParams.get("roomId")||"");
     const [roomPwd, setRoomPwd] = useState("");
     const [loading, setLoading] = useState(false);
 
@@ -24,7 +25,7 @@ function JoinRoom() {
 
             const room = res.data;
 
-            // ✅ Navigate to editor
+            //  Navigate to editor
             navigate(`/room/${roomId}`, {
                 state: {
                     isHost: false,

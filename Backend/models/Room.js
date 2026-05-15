@@ -29,7 +29,11 @@ const roomSchema = Schema({
             type: Schema.Types.ObjectId,
             ref: "user"
         }
-    ]
+    ],
+    isActive:{
+        type: Boolean,
+        default:true
+    }
 }, {
     timestamps: true
 })

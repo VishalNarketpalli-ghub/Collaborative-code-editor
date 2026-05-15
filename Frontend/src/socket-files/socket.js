@@ -2,10 +2,10 @@ import { io } from "socket.io-client";
 
 let socket = null;
 
-export const connectSocket = () => {
-    const token = localStorage.getItem("token");
+export const connectSocket = (token) => {
+    if(socket?.connected) return socket
 
-    socket = io("http://localhost:6600", {
+    socket = io(import.meta.env.VITE_SOCKET_URL || "http://localhost:6600", {
         auth: { token }
     });
 
@@ -15,5 +15,8 @@ export const connectSocket = () => {
 export const getSocket = () => socket;
 
 export const disconnectSocket = () => {
-    if (socket) socket.disconnect();
+    if (socket){
+        socket.disconnect()
+        socket=null
+    }
 };

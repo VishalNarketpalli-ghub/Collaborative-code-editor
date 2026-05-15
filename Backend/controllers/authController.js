@@ -97,9 +97,9 @@ export const getCurrentUser = async (req, res) => {
             .populate("rooms");
 
         // send response
-        res.status(201).json(user);
+        res.status(200).json(user);
     } catch (error) {
         // handle exception
-        res.status(200).json({ message: "Logged out successfully" });
+        res.status(500).json({ message: "Logged out successfully" });
     }
 };

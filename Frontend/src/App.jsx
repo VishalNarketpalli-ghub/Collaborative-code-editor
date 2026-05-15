@@ -1,16 +1,27 @@
-import { createBrowserRouter, RouterProvider } from "react-router-dom";
-
+import { createBrowserRouter, RouterProvider, Navigate } from "react-router-dom";
+import { useAuth } from "./context/AuthContext";
 import RootLayout from "./components/layout/RootLayout";
 import Home from "./components/pages/Home";
 import Login from "./components/pages/Login";
-import CreateRoom from "./components/room/CreateRoom";
-import JoinRoom from "./components//room/JoinRoom";
-import EditorPage from "./components/pages/EditorPage";
 import Register from "./components/pages/Register";
 import Room from "./components/pages/Room";
-import Dashboard from "./components/pages/Profile";
+import CreateRoom from "./components/room/CreateRoom";
+import JoinRoom from "./components/room/JoinRoom";
+import EditorPage from "./components/pages/EditorPage";
 import Profile from "./components/pages/Profile";
 
+
+function PrivateRoute({ children }) {
+    const { user, loading } = useAuth()
+    if (loading) {
+        return (
+            <div className="min-h-screen bg-gray-950 text-white flex items-center justify-center">
+                <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+        )
+    }
+    return user ? children : <Navigate to="/login" replace/>
+}
 function App() {
     const routerObj = createBrowserRouter([
         {
@@ -20,20 +31,6 @@ function App() {
                 {
                     index: true,
                     element: <Home />,
-                },
-                {
-                    path: "room",
-                    element: <Room />,
-                },
-
-                {
-                    path: "create-room",
-                    element: <CreateRoom />,
-                },
-
-                {
-                    path: "join-room",
-                    element: <JoinRoom />,
                 },
 
                 {
@@ -45,19 +42,30 @@ function App() {
                     path: "register",
                     element: <Register />,
                 },
+
                 {
-                    path: "dashboard",
-                    element: <Dashboard />,
+                    path: "room",
+                    element: <PrivateRoute><Room /></PrivateRoute>,
+                },
+
+                {
+                    path: "create-room",
+                    element: <PrivateRoute><CreateRoom /></PrivateRoute>,
+                },
+
+                {
+                    path: "join-room",
+                    element: <PrivateRoute><JoinRoom /></PrivateRoute>,
                 },
                 {
                     path: "profile",
-                    element: <Profile />,
+                    element: <PrivateRoute><Profile /></PrivateRoute>,
                 },
             ],
         },
         {
             path: "/room/:roomId",
-            element: <EditorPage />,
+            element: <PrivateRoute><EditorPage/></PrivateRoute>
         },
     ]);
 

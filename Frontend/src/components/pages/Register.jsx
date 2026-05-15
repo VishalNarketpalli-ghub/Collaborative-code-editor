@@ -2,11 +2,12 @@ import { useNavigate } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { useState } from "react";
 import API from "../../utils/axios"; // Axios instance for API calls
+import { useAuth } from "../../context/AuthContext";
 
 function Register() {
     // Hook for navigation between routes
     const navigate = useNavigate();
-
+    const {login} = useAuth()
     // Loading state to disable button during API call
     const [loading, setLoading] = useState(false);
 
@@ -32,12 +33,10 @@ function Register() {
                 email: data.email,
                 password: data.password,
             });
-
-            // Store JWT token in localStorage for authentication
-            localStorage.setItem("token", res.data.token);
+            login(res.data); // updates auth context, stores token, connects socket
 
             // Redirect user after successful registration
-            navigate("/");
+            navigate("/profile");
         } catch (err) {
             // Handle errors from backend or network
             console.error(err);
