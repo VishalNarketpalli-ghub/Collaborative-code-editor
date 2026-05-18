@@ -52,10 +52,12 @@ export default function codeSocket(io, socket) {
 
     //RUN CODE - broadcasting output to all users in room
     socket.on("run_code", async ({ roomId, source_code, language, stdin }) => {
+        console.log(`[run_code] trigger for roomId: ${roomId}, lang: ${language}`);
         try {
             io.to(roomId).emit("execution_status", "Running...");
 
             const result = await runCode(source_code, language, stdin);
+            console.log(`[run_code] result:`, result);
 
             if (result.statusCode === 200) {
                 io.to(roomId).emit("code_output", {
