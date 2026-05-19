@@ -21,10 +21,12 @@ const initSocket = (server) => {
 
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-            socket.user = {
-                id: decoded.userId
-            };
+            // socket.data is shared across fetchSockets() — this is the fix for kick/ban
             socket.data.userId = decoded.userId;
+            socket.data.username = ""; // will be set when client emits join-room
+
+            // Keep socket.user for backward compat (disconnect handler)
+            socket.user = { id: decoded.userId, username: "" };
 
             next();
         } catch (err) {

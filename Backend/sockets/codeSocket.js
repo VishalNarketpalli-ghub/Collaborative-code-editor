@@ -5,9 +5,13 @@ export default function codeSocket(io, socket) {
 
     socket.on("join-room", async ({ roomId, password, username }) => {
 
-        const userId = socket.user.id;
-        socket.user.username = username; // Store on socket
-        socket.data.username = username; // Store on data for fetchSockets
+        const userId = socket.data.userId;
+
+        // Store username on both socket.data (for fetchSockets) and socket.user (for disconnect)
+        if (username) {
+            socket.data.username = username;
+            socket.user.username = username;
+        }
 
         const room = await Room.findOne({ roomId });
 
@@ -50,14 +54,14 @@ export default function codeSocket(io, socket) {
     // LEAVE ROOM
     socket.on("leave_room", async ({ roomId }) => {
         socket.leave(roomId);
-        const userId = socket.user.id;
-        const username = socket.user.username;
+        const userId = socket.data.userId;
+        const username = socket.data.username;
         io.to(roomId).emit("user_left", { userId, username });
     });
 
     // KICK USER (Host only)
     socket.on("kick_user", async ({ roomId, targetUserId }) => {
-        const userId = socket.user.id;
+        const userId = socket.data.userId;
         const room = await Room.findOne({ roomId });
         if (!room || room.createdBy.toString() !== userId) return;
 
@@ -74,7 +78,7 @@ export default function codeSocket(io, socket) {
 
     // BAN USER (Host only)
     socket.on("ban_user", async ({ roomId, targetUserId }) => {
-        const userId = socket.user.id;
+        const userId = socket.data.userId;
         const room = await Room.findOne({ roomId });
         if (!room || room.createdBy.toString() !== userId) return;
 
@@ -99,7 +103,7 @@ export default function codeSocket(io, socket) {
     // LANGUAGE CHANGE : host only
     socket.on("language_change", async ({ roomId, language }) => {
 
-        const userId = socket.user.id
+        const userId = socket.data.userId
         const room = await Room.findOne({ roomId });
         if (!room) return;
         if(room.createdBy.toString() !== userId) return
@@ -149,7 +153,7 @@ export default function codeSocket(io, socket) {
 
     socket.on("end_session",async({roomId})=>{
         
-        const userId = socket.user.id
+        const userId = socket.data.userId
         const room = await Room.findOne({roomId})
         if(!room) return
         if(room.createdBy.toString() !== userId) return // only host

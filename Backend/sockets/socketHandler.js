@@ -17,8 +17,8 @@ const socketHandler = (io) => {
             rooms.forEach((roomId) => {
                 if (roomId !== socket.id) {
                     socket.to(roomId).emit("user_left", {
-                        userId: socket.user.id,
-                        username: socket.user.username
+                        userId: socket.data.userId,
+                        username: socket.data.username || "Unknown"
                     });
                 }
             });

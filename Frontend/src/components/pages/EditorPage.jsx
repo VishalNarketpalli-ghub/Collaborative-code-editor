@@ -114,8 +114,8 @@ function EditorPage() {
 
         const socket = getSocket()
 
-        // Join the socket room
-        socket.emit("join-room", { roomId })
+        // Join the socket room — include username so backend can populate participant list
+        socket.emit("join-room", { roomId, username: user?.username || "Unknown" })
 
         // Init Monaco editor
         editorInstance.current = monaco.editor.create(editorRef.current, {

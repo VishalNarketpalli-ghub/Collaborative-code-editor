@@ -2,8 +2,8 @@ export default function cursorSocket(io, socket) {
 
     socket.on("cursor_move", ({ roomId, line, column }) => {
 
-        const userId = socket.user.id;
-        const username = socket.user.username;
+        const userId = socket.data.userId;
+        const username = socket.data.username || "Unknown";
 
         socket.to(roomId).emit("cursor_update", {
             userId,

@@ -4,7 +4,7 @@ import Room from "../models/Room.js";
 export default function chatSocket(io, socket) {
     socket.on("send-message", async ({ roomId, message }) => {
         try {
-            const userId = socket.user.id;
+            const userId = socket.data.userId;
             const room = await Room.findOne({ roomId });
             if(!room) return;
 
