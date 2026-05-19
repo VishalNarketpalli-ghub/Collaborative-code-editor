@@ -24,6 +24,7 @@ const initSocket = (server) => {
             socket.user = {
                 id: decoded.userId
             };
+            socket.data.userId = decoded.userId;
 
             next();
         } catch (err) {

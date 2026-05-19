@@ -1,5 +1,6 @@
 import Room from '../models/Room.js';
 import User from '../models/User.js'; // import user model
+import ChatMessage from '../models/chatMessage.js';
 
 // Create Room
 export const createRoom = async (req, res) => {
@@ -58,6 +59,11 @@ export const joinRoom = async (req, res) => {
         // Validate password
         if (room.password && room.password !== password) {
             return res.status(401).json({ message: "Incorrect room password" });
+        }
+
+        // Check if user is banned
+        if (room.bannedUsers && room.bannedUsers.includes(userId)) {
+            return res.status(403).json({ message: "You have been banned from this room." });
         }
 
         // Add user to room participants
@@ -146,6 +152,10 @@ export const endSession = async (req, res) => {
         //if the user is host and room exists
         room.isActive = false
         await room.save()
+
+        // Clear temporary chat messages
+        await ChatMessage.deleteMany({ room: room._id })
+
         res.status(200).json({ message: "Session Ended" })
     } catch (err) {
         res.status(500).json({ message: err.message })
@@ -171,6 +181,10 @@ export const reopenSession = async (req, res) => {
 
         room.isActive = true
         await room.save()
+
+        // Clear old chat messages on reopen
+        await ChatMessage.deleteMany({ room: room._id })
+
         res.status(200).json(room)
     }catch(err){
         res.status(500).json({message: err.message})
