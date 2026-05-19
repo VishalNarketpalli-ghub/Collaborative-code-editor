@@ -16,9 +16,17 @@ import cookieParser from 'cookie-parser'
 dotenv.config()
 const app = express()
 
+const allowedOrigins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    process.env.FRONTEND_URL,
+].filter(Boolean);
+
 app.use(cors({
-    origin: process.env.FRONTEND_URL || "http://localhost:5173",
-    credentials: true
+    origin: allowedOrigins,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
 }));
 
 app.use(express.json())

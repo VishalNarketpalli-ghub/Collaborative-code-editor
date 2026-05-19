@@ -6,7 +6,12 @@ export const connectSocket = (token) => {
     if(socket) return socket
 
     socket = io(import.meta.env.VITE_SOCKET_URL || "http://localhost:6600", {
-        auth: { token }
+        auth: { token },
+        // Allow polling fallback — needed when Render's WebSocket upgrade is slow
+        transports: ["websocket", "polling"],
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000,
     });
 
     return socket;

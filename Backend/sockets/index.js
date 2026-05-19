@@ -3,12 +3,23 @@ import socketHandler from "./socketHandler.js";
 import jwt from 'jsonwebtoken'
 
 const initSocket = (server) => {
+    // Support multiple origins: local dev + production Vercel URL
+    const allowedOrigins = [
+        "http://localhost:5173",
+        "http://localhost:3000",
+        process.env.FRONTEND_URL,
+    ].filter(Boolean); // remove undefined if env var not set
+
     const io = new Server(server, {
         cors: {
-            origin: process.env.FRONTEND_URL || "http://localhost:5173",
+            origin: allowedOrigins,
             methods: ["GET", "POST"],
             credentials: true,
-        }
+        },
+        // Required for Render.com: allow polling fallback when WebSocket upgrades fail
+        transports: ["websocket", "polling"],
+        pingTimeout: 60000,
+        pingInterval: 25000,
     });
 
     io.use((socket, next) => {
