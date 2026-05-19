@@ -36,7 +36,9 @@ function EditorPage() {
 
     const editorRef = useRef(null)
     const editorInstance = useRef(null)
-    const isRemoteUpdate = useRef(false)   // prevents echo loop
+    const isRemoteUpdate = useRef(false)
+    const decorationsRef = useRef({}) // Store monaco decorations
+    const styleSheetRef = useRef(null) // Dynamic stylesheet for cursors
 
     const [room, setRoom] = useState(null)
     const [isHost, setIsHost] = useState(false)
@@ -47,10 +49,26 @@ function EditorPage() {
     const [output, setOutput] = useState({ text: "Run code to see output...", isError: false })
     const [isRunning, setIsRunning] = useState(false)
     const [participants, setParticipants] = useState([])
+    const [showOnlineUsers, setShowOnlineUsers] = useState(false)
     const [loading, setLoading] = useState(true)
     const [leftWidth, setLeftWidth] = useState(70)
 
     const chatEndRef = useRef(null)
+
+    // Helper: generate unique color from userId
+    const getUserColor = (id) => {
+        let hash = 0;
+        for (let i = 0; i < id.length; i++) hash = id.charCodeAt(i) + ((hash << 5) - hash);
+        return `hsl(${Math.abs(hash) % 360}, 80%, 60%)`;
+    }
+
+    // Init dynamic stylesheet for cursors
+    useEffect(() => {
+        const styleEl = document.createElement("style")
+        document.head.appendChild(styleEl)
+        styleSheetRef.current = styleEl.sheet
+        return () => styleEl.remove()
+    }, [])
 
     // ── STEP 1: Fetch room + handle direct-link join ──────────────────────────
     useEffect(() => {
@@ -64,7 +82,6 @@ function EditorPage() {
                 setIsHost(hostId === user?._id)
                 setLanguage(roomData.language)
                 setRoom(roomData)
-                setParticipants(roomData.participants || [])
 
                 // Direct-link join: check if user is already a participant
                 const userId = user?._id
@@ -112,7 +129,7 @@ function EditorPage() {
             fontSize: 14,
         })
 
-        // Load code from DB
+        // Initial load of code from DB
         const loadCode = async () => {
             try {
                 const { data } = await API.get(`/code/${roomId}`)
@@ -136,11 +153,20 @@ function EditorPage() {
         }
         loadChatHistory()
 
-        // Local edits → broadcast (SKIP if it's a remote update to prevent echo)
+        // Local edits → broadcast
         editorInstance.current.onDidChangeModelContent(() => {
             if (isRemoteUpdate.current) return
             const code = editorInstance.current.getValue()
             socket.emit("code_change", { roomId, code })
+        })
+
+        // Local cursor moves → broadcast
+        editorInstance.current.onDidChangeCursorPosition((e) => {
+            socket.emit("cursor_move", {
+                roomId,
+                line: e.position.lineNumber,
+                column: e.position.column
+            })
         })
 
         // ── Socket event listeners ──
@@ -175,14 +201,61 @@ function EditorPage() {
             setIsRunning(false)
         }
 
-        const onUserJoined = ({ userId }) => {
-            setParticipants((prev) =>
-                prev.includes(userId) ? prev : [...prev, userId]
-            )
+        const onRoomUsers = (users) => {
+            setParticipants(users)
         }
 
-        const onUserLeft = ({ userId }) => {
-            setParticipants((prev) => prev.filter((p) => p !== userId))
+        const onUserJoined = ({ userId, username }) => {
+            setParticipants((prev) => {
+                if (prev.some(p => p.userId === userId)) return prev;
+                return [...prev, { userId, username }];
+            });
+            setMessages((prev) => [...prev, {
+                isSystem: true,
+                message: `${username} joined the room`
+            }]);
+        }
+
+        const onUserLeft = ({ userId, username }) => {
+            setParticipants((prev) => prev.filter((p) => p.userId !== userId));
+            setMessages((prev) => [...prev, {
+                isSystem: true,
+                message: `${username} left the room`
+            }]);
+            
+            // Remove cursor decoration
+            if (decorationsRef.current[userId]) {
+                decorationsRef.current[userId] = editorInstance.current.deltaDecorations(
+                    decorationsRef.current[userId], []
+                );
+            }
+        }
+
+        const onCursorUpdate = ({ userId, line, column, username }) => {
+            if (!editorInstance.current) return;
+            
+            // Ensure css class exists for this user
+            const className = `cursor-${userId}`;
+            const color = getUserColor(userId);
+            
+            // Add style rule if not exists (inefficient to check every time, but fast enough)
+            try {
+                styleSheetRef.current.insertRule(`.${className} { border-left: 2px solid ${color}; position: absolute; z-index: 10; }`, styleSheetRef.current.cssRules.length)
+            } catch (e) { /* ignore duplicate rule error */ }
+
+            // Apply decoration
+            const newDecorations = [{
+                range: new monaco.Range(line, column, line, column),
+                options: {
+                    className,
+                    hoverMessage: { value: `**${username || 'User'}**` }
+                }
+            }];
+
+            decorationsRef.current[userId] = editorInstance.current.deltaDecorations(
+                decorationsRef.current[userId] || [],
+                newDecorations
+            );
         }
 
         // Session ended by host → navigate everyone away
@@ -191,14 +264,28 @@ function EditorPage() {
             navigate("/room")
         }
 
+        const onKicked = () => {
+            alert("You have been removed from the session by the host.")
+            navigate("/profile")
+        }
+
+        const onBanned = () => {
+            alert("You have been banned from this session.")
+            navigate("/profile")
+        }
+
         socket.on("code_update", onCodeUpdate)
         socket.on("language_update", onLanguageUpdate)
         socket.on("receive_message", onReceiveMessage)
         socket.on("execution_status", onExecutionStatus)
         socket.on("code_output", onCodeOutput)
+        socket.on("room_users", onRoomUsers)
         socket.on("user_joined", onUserJoined)
         socket.on("user_left", onUserLeft)
+        socket.on("cursor_update", onCursorUpdate)
         socket.on("session_ended", onSessionEnded)
+        socket.on("kicked", onKicked)
+        socket.on("banned", onBanned)
 
         // ── Cleanup ──
         return () => {
@@ -208,9 +295,13 @@ function EditorPage() {
             socket.off("receive_message", onReceiveMessage)
             socket.off("execution_status", onExecutionStatus)
             socket.off("code_output", onCodeOutput)
+            socket.off("room_users", onRoomUsers)
             socket.off("user_joined", onUserJoined)
             socket.off("user_left", onUserLeft)
+            socket.off("cursor_update", onCursorUpdate)
             socket.off("session_ended", onSessionEnded)
+            socket.off("kicked", onKicked)
+            socket.off("banned", onBanned)
         }
     }, [loading, roomId])
 
@@ -234,6 +325,21 @@ function EditorPage() {
         if (window.confirm(`Change language to ${newLang}? This will affect all participants.`)) {
             setLanguage(newLang)
             getSocket().emit("language_change", { roomId, language: newLang })
+        }
+    }
+
+    // Host kick/ban controls
+    const handleKick = (targetUserId, targetUsername) => {
+        if (!isHost) return
+        if (window.confirm(`Are you sure you want to remove ${targetUsername} from the room?`)) {
+            getSocket().emit("kick_user", { roomId, targetUserId })
+        }
+    }
+
+    const handleBan = (targetUserId, targetUsername) => {
+        if (!isHost) return
+        if (window.confirm(`Are you sure you want to BAN ${targetUsername}? They will not be able to rejoin.`)) {
+            getSocket().emit("ban_user", { roomId, targetUserId })
         }
     }
 
@@ -287,9 +393,15 @@ function EditorPage() {
     // End session — host only, broadcasts to everyone
     const handleEndSession = async () => {
         if (!isHost) return
-        if (!window.confirm("End this session? All participants will be removed.")) return
+        if (!window.confirm("Have you saved the code? Click OK to end the session. All participants will be removed.")) return
         getSocket().emit("end_session", { roomId })
-        navigate("/room")
+        navigate("/profile")
+    }
+
+    // Leave room
+    const handleLeaveRoom = () => {
+        getSocket().emit("leave_room", { roomId })
+        navigate("/profile")
     }
 
     // Horizontal resize
@@ -325,6 +437,15 @@ function EditorPage() {
                 <div className="flex items-center gap-3">
                     <span className="text-xs text-gray-400">Room:</span>
                     <span className="font-mono bg-gray-800 px-2 py-1 rounded text-sm">{roomId}</span>
+                    <button
+                        onClick={() => {
+                            navigator.clipboard.writeText(roomId)
+                            alert("Room ID copied!")
+                        }}
+                        className="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded cursor-pointer"
+                    >
+                        Copy ID
+                    </button>
                     <button
                         onClick={copyRoomLink}
                         className="text-xs px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded cursor-pointer"
@@ -371,8 +492,17 @@ function EditorPage() {
                         disabled={isRunning}
                         className={`text-sm px-3 py-1 rounded cursor-pointer ${isRunning ? "bg-green-800 opacity-60" : "bg-green-600 hover:bg-green-700"}`}
                     >
-                        {isRunning ? "Running..." : "▶ Run"}
+                        {isRunning ? "Running..." : "Run"}
                     </button>
+
+                    {!isHost && (
+                        <button
+                            onClick={handleLeaveRoom}
+                            className="text-sm px-3 py-1 bg-gray-600 hover:bg-gray-700 rounded cursor-pointer"
+                        >
+                            Leave Room
+                        </button>
+                    )}
 
                     {isHost && (
                         <button
@@ -423,17 +553,68 @@ function EditorPage() {
                     </div>
 
                     {/* CHAT */}
-                    <div className="flex-1 flex flex-col min-h-0">
-                        <div className="px-3 py-2 text-xs font-semibold text-gray-400 bg-gray-900 border-b border-gray-800 uppercase tracking-wide">
-                            Chat · {participants.length} online
+                    <div className="flex-1 flex flex-col min-h-0 relative">
+                        <div 
+                            className="px-3 py-2 text-xs font-semibold text-gray-400 bg-gray-900 border-b border-gray-800 uppercase tracking-wide cursor-pointer flex justify-between items-center hover:bg-gray-800"
+                            onClick={() => setShowOnlineUsers(!showOnlineUsers)}
+                        >
+                            <span>Chat · {participants.length} online</span>
+                            <span className="text-gray-500">{showOnlineUsers ? "▼" : "▲"}</span>
                         </div>
+
+                        {/* Online Users Dropdown */}
+                        {showOnlineUsers && (
+                            <div className="absolute top-8 left-0 right-0 bg-gray-800 border-b border-gray-700 z-20 max-h-40 overflow-y-auto">
+                                {participants.map((p) => {
+                                    const pIsHost = p.userId === (room?.createdBy?._id || room?.createdBy);
+                                    const isMe = p.userId === user?._id;
+                                    return (
+                                        <div key={p.userId} className="px-3 py-2 text-sm text-gray-300 flex items-center justify-between border-b border-gray-700 last:border-0 group">
+                                            <div className="flex items-center gap-2">
+                                                <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                                                <span style={{ color: getUserColor(p.userId) }}>{p.username}</span>
+                                                {pIsHost && <span className="text-xs text-yellow-500 font-bold ml-1">(Host)</span>}
+                                                {isMe && <span className="text-xs text-gray-500">(You)</span>}
+                                            </div>
+                                            
+                                            {/* Admin Controls */}
+                                            {isHost && !isMe && (
+                                                <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <button 
+                                                        onClick={() => handleKick(p.userId, p.username)}
+                                                        className="text-[10px] bg-red-600 hover:bg-red-500 px-2 py-1 rounded cursor-pointer"
+                                                    >
+                                                        Remove
+                                                    </button>
+                                                    <button 
+                                                        onClick={() => handleBan(p.userId, p.username)}
+                                                        className="text-[10px] bg-red-900 hover:bg-red-800 px-2 py-1 rounded cursor-pointer border border-red-700"
+                                                    >
+                                                        Ban
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+
                         <div className="flex-1 overflow-y-auto p-3 space-y-2">
                             {messages.map((msg, i) => (
-                                <div key={i} className="text-sm">
-                                    <span className="text-blue-400 font-medium">
-                                        {msg.sender?.username || "User"}:&nbsp;
-                                    </span>
-                                    <span className="text-gray-300 break-words">{msg.message}</span>
+                                <div key={i} className={`text-sm ${msg.isSystem ? "text-center my-2" : ""}`}>
+                                    {msg.isSystem ? (
+                                        <span className="text-xs text-gray-500 bg-gray-800 px-2 py-1 rounded-full">
+                                            {msg.message}
+                                        </span>
+                                    ) : (
+                                        <>
+                                            <span className="text-blue-400 font-medium">
+                                                {msg.sender?.username || "User"}:&nbsp;
+                                            </span>
+                                            <span className="text-gray-300 break-words">{msg.message}</span>
+                                        </>
+                                    )}
                                 </div>
                             ))}
                             <div ref={chatEndRef} />

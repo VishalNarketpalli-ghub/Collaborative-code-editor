@@ -5,8 +5,8 @@ export default function chatSocket(io, socket) {
     socket.on("send-message", async ({ roomId, message }) => {
         try {
             const userId = socket.user.id;
-            const room = await Room.findOne({ roomId })
-            if(!room) return
+            const room = await Room.findOne({ roomId });
+            if(!room) return;
 
             const chat = await ChatMessage.create({
                 room: room._id,
@@ -14,10 +14,10 @@ export default function chatSocket(io, socket) {
                 message
             });
 
-            //populate sener username before broadcasting
-            const populated = await ChatMessage.findById(chat._id).populate("sender","username")
-            io.to(roomId).emit("receive_message",populated)
-        }catch(error){
+            //populate sender username before broadcasting
+            const populated = await ChatMessage.findById(chat._id).populate("sender", "username");
+            io.to(roomId).emit("receive_message", populated);
+        } catch(error){
             console.error("Chat error:",error.message)
         }
     });

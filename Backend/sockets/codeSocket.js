@@ -3,10 +3,11 @@ import { runCode } from "../services/executeService.js";
 
 export default function codeSocket(io, socket) {
 
-    // JOIN ROOM
-    socket.on("join-room", async ({ roomId, password }) => {
+    socket.on("join-room", async ({ roomId, password, username }) => {
 
         const userId = socket.user.id;
+        socket.user.username = username; // Store on socket
+        socket.data.username = username; // Store on data for fetchSockets
 
         const room = await Room.findOne({ roomId });
 
@@ -18,6 +19,10 @@ export default function codeSocket(io, socket) {
             return socket.emit("join_error", "Incorrect room password");
         }
 
+        if (room.bannedUsers && room.bannedUsers.includes(userId)) {
+            return socket.emit("join_error", "You have been banned from this room");
+        }
+
         socket.join(roomId);
 
         if (!room.participants.includes(userId)) {
@@ -25,10 +30,70 @@ export default function codeSocket(io, socket) {
             await room.save();
         }
 
-        io.to(roomId).emit("user_joined", {
+        // Get actual online users
+        const sockets = await io.in(roomId).fetchSockets();
+        const activeUsers = sockets.map(s => ({
+            userId: s.data.userId,
+            username: s.data.username || "Unknown"
+        }));
+
+        // Send full list to the user who just joined
+        socket.emit("room_users", activeUsers);
+
+        // Notify others
+        socket.to(roomId).emit("user_joined", {
             userId,
-            socketId: socket.id
+            username
         });
+    });
+
+    // LEAVE ROOM
+    socket.on("leave_room", async ({ roomId }) => {
+        socket.leave(roomId);
+        const userId = socket.user.id;
+        const username = socket.user.username;
+        io.to(roomId).emit("user_left", { userId, username });
+    });
+
+    // KICK USER (Host only)
+    socket.on("kick_user", async ({ roomId, targetUserId }) => {
+        const userId = socket.user.id;
+        const room = await Room.findOne({ roomId });
+        if (!room || room.createdBy.toString() !== userId) return;
+
+        // Find target user's socket
+        const sockets = await io.in(roomId).fetchSockets();
+        const targetSocket = sockets.find(s => s.data.userId === targetUserId);
+        
+        if (targetSocket) {
+            targetSocket.emit("kicked");
+            targetSocket.leave(roomId);
+            io.to(roomId).emit("user_left", { userId: targetUserId, username: targetSocket.data.username });
+        }
+    });
+
+    // BAN USER (Host only)
+    socket.on("ban_user", async ({ roomId, targetUserId }) => {
+        const userId = socket.user.id;
+        const room = await Room.findOne({ roomId });
+        if (!room || room.createdBy.toString() !== userId) return;
+
+        // Add to banned list
+        if (!room.bannedUsers) room.bannedUsers = [];
+        if (!room.bannedUsers.includes(targetUserId)) {
+            room.bannedUsers.push(targetUserId);
+            await room.save();
+        }
+
+        // Force them out
+        const sockets = await io.in(roomId).fetchSockets();
+        const targetSocket = sockets.find(s => s.data.userId === targetUserId);
+        
+        if (targetSocket) {
+            targetSocket.emit("banned");
+            targetSocket.leave(roomId);
+            io.to(roomId).emit("user_left", { userId: targetUserId, username: targetSocket.data.username });
+        }
     });
 
     // LANGUAGE CHANGE : host only

@@ -30,6 +30,12 @@ const roomSchema = Schema({
             ref: "user"
         }
     ],
+    bannedUsers: [
+        {
+            type: Schema.Types.ObjectId,
+            ref: "user"
+        }
+    ],
     isActive:{
         type: Boolean,
         default:true
