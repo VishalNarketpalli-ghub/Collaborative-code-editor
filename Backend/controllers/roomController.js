@@ -1,6 +1,7 @@
 import Room from '../models/Room.js';
 import User from '../models/User.js'; // import user model
 import ChatMessage from '../models/chatMessage.js';
+import CodeFile from '../models/Codefile.js';
 
 // Create Room
 export const createRoom = async (req, res) => {
@@ -188,5 +189,68 @@ export const reopenSession = async (req, res) => {
         res.status(200).json(room)
     }catch(err){
         res.status(500).json({message: err.message})
+    }
+}
+
+// Delete a single room from user's history (host only)
+export const deleteRoom = async (req, res) => {
+    try {
+        const userId = req.user.userId
+        const { roomId } = req.params
+
+        const room = await Room.findOne({ roomId })
+
+        if (!room) return res.status(404).json({ message: 'Room not found' })
+
+        // Only the host can fully delete the room
+        if (room.createdBy.toString() !== userId) {
+            // Non-hosts can only remove room from their history
+            await User.findByIdAndUpdate(userId, { $pull: { rooms: room._id } })
+            return res.status(200).json({ message: 'Room removed from your history' })
+        }
+
+        // Host: delete everything
+        await ChatMessage.deleteMany({ room: room._id })
+        await CodeFile.deleteOne({ roomId })
+        await Room.findByIdAndDelete(room._id)
+
+        // Remove from all participants' rooms list
+        await User.updateMany({ rooms: room._id }, { $pull: { rooms: room._id } })
+
+        res.status(200).json({ message: 'Room deleted successfully' })
+    } catch (err) {
+        res.status(500).json({ message: err.message })
+    }
+}
+
+// Delete all rooms from user's history
+export const deleteAllUserRooms = async (req, res) => {
+    try {
+        const userId = req.user.userId
+
+        const user = await User.findById(userId).populate('rooms')
+        if (!user) return res.status(404).json({ message: 'User not found' })
+
+        const hostedRooms = user.rooms.filter(
+            (r) => r.createdBy.toString() === userId
+        )
+        const hostedRoomIds = hostedRooms.map((r) => r._id)
+        const hostedRoomStringIds = hostedRooms.map((r) => r.roomId)
+
+        // Delete all hosted rooms and their data
+        if (hostedRoomIds.length > 0) {
+            await ChatMessage.deleteMany({ room: { $in: hostedRoomIds } })
+            await CodeFile.deleteMany({ roomId: { $in: hostedRoomStringIds } })
+            await Room.deleteMany({ _id: { $in: hostedRoomIds } })
+            // Remove from all participants
+            await User.updateMany({ rooms: { $in: hostedRoomIds } }, { $pull: { rooms: { $in: hostedRoomIds } } })
+        }
+
+        // For rooms the user did NOT host, just remove from their history
+        await User.findByIdAndUpdate(userId, { $set: { rooms: [] } })
+
+        res.status(200).json({ message: 'All rooms cleared from history' })
+    } catch (err) {
+        res.status(500).json({ message: err.message })
     }
 }

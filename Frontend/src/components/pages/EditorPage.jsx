@@ -55,6 +55,9 @@ function EditorPage() {
 
     const chatEndRef = useRef(null)
 
+    // Cursor label hide timers (per user)
+    const cursorLabelTimers = useRef({})
+
     // Helper: generate unique color from userId
     const getUserColor = (id) => {
         let hash = 0;
@@ -72,6 +75,9 @@ function EditorPage() {
 
     // ── STEP 1: Fetch room + handle direct-link join ──────────────────────────
     useEffect(() => {
+        // Guard: wait until user is loaded from AuthContext
+        if (!user) return
+
         const initRoom = async () => {
             try {
                 // Fetch room details
@@ -229,25 +235,61 @@ function EditorPage() {
                     decorationsRef.current[userId], []
                 );
             }
+
+            // Clear label timer
+            if (cursorLabelTimers.current[userId]) {
+                clearTimeout(cursorLabelTimers.current[userId]);
+                delete cursorLabelTimers.current[userId];
+            }
         }
+
 
         const onCursorUpdate = ({ userId, line, column, username }) => {
             if (!editorInstance.current) return;
             
-            // Ensure css class exists for this user
-            const className = `cursor-${userId}`;
             const color = getUserColor(userId);
-            
-            // Add style rule if not exists (inefficient to check every time, but fast enough)
-            try {
-                styleSheetRef.current.insertRule(`.${className} { border-left: 2px solid ${color}; position: absolute; z-index: 10; }`, styleSheetRef.current.cssRules.length)
-            } catch (e) { /* ignore duplicate rule error */ }
+            const safeUsername = (username || 'User').replace(/[^a-zA-Z0-9 _-]/g, '');
 
-            // Apply decoration
+            // ── Inject cursor CSS rules once per user ──
+            const cursorClass = `remote-cursor-${userId}`;
+            const labelClass = `remote-cursor-label-${userId}`;
+
+            try {
+                const sheet = styleSheetRef.current;
+                // Cursor line: vertical bar in user's color
+                sheet.insertRule(
+                    `.${cursorClass} { border-left: 2px solid ${color}; position: absolute; z-index: 10; }`,
+                    sheet.cssRules.length
+                );
+                // Label chip above cursor in user's color
+                sheet.insertRule(
+                    `.${labelClass}::before { content: "${safeUsername}"; background: ${color}; color: #000; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px 3px 3px 0; position: absolute; top: -18px; left: -1px; white-space: nowrap; opacity: 0.9; pointer-events: none; z-index: 20; line-height: 16px; }`,
+                    sheet.cssRules.length
+                );
+            } catch (e) { /* ignore duplicate rule errors — CSS sheet keeps accumulating but that's fine */ }
+
+            // ── Timer: show label immediately, auto-hide after 3 s of inactivity ──
+            if (cursorLabelTimers.current[userId]) {
+                clearTimeout(cursorLabelTimers.current[userId]);
+            }
+            cursorLabelTimers.current[userId] = setTimeout(() => {
+                if (!editorInstance.current) return;
+                // Re-apply WITHOUT label class to hide the username chip
+                decorationsRef.current[userId] = editorInstance.current.deltaDecorations(
+                    decorationsRef.current[userId] || [],
+                    [{
+                        range: new monaco.Range(line, column, line, column),
+                        options: { className: cursorClass, hoverMessage: { value: `**${username || 'User'}**` } }
+                    }]
+                );
+            }, 3000);
+
+            // ── Apply Monaco decorations WITH label (shown immediately on move) ──
             const newDecorations = [{
                 range: new monaco.Range(line, column, line, column),
                 options: {
-                    className,
+                    className: cursorClass,
+                    beforeContentClassName: labelClass,
                     hoverMessage: { value: `**${username || 'User'}**` }
                 }
             }];
@@ -257,6 +299,7 @@ function EditorPage() {
                 newDecorations
             );
         }
+
 
         // Session ended by host → navigate everyone away
         const onSessionEnded = () => {
