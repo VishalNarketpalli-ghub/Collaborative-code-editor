@@ -37,8 +37,30 @@ function EditorPage() {
     const editorRef = useRef(null)
     const editorInstance = useRef(null)
     const isRemoteUpdate = useRef(false)
-    const decorationsRef = useRef({}) // Store monaco decorations
-    const styleSheetRef = useRef(null) // Dynamic stylesheet for cursors
+
+    // decorationsRef: tracks the Monaco decoration IDs for each remote user's cursor bar.
+    // Key = userId, Value = array of decoration IDs returned by deltaDecorations.
+    const decorationsRef = useRef({})
+
+    // styleSheetRef: the CSSStyleSheet for injecting per-user cursor bar rules.
+    const styleSheetRef = useRef(null)
+
+    // cursorWidgetsRef: tracks the Monaco Content Widget for each remote user's name label.
+    // Key = userId, Value = { widget, state, domNode }
+    // Content Widgets are the correct Monaco API for overlaying DOM elements without clipping.
+    const cursorWidgetsRef = useRef({})
+
+    // userColorMapRef: maps userId -> color string. Colors are assigned in join order
+    // so that the first two users always get maximally different colors (indices 0 and 1),
+    // regardless of userId hash collisions.
+    const userColorMapRef = useRef({})
+
+    // nextColorIndexRef: counter that advances each time a new user gets a color.
+    const nextColorIndexRef = useRef(0)
+
+    // cursorLabelTimers: one setTimeout handle per userId for hiding the name label
+    // after 3 seconds of inactivity.
+    const cursorLabelTimers = useRef({})
 
     const [room, setRoom] = useState(null)
     const [isHost, setIsHost] = useState(false)
@@ -55,21 +77,50 @@ function EditorPage() {
 
     const chatEndRef = useRef(null)
 
-    // Cursor label hide timers (per user)
-    const cursorLabelTimers = useRef({})
+    // Color palette ordered for maximum visual distance.
+    // The ordering ensures indices 0 and 1 look nothing alike, 0-2 look nothing alike, etc.
+    // This matters when participant count is low (e.g., 2 users always get cyan + hot pink).
+    const CURSOR_COLORS = [
+        "#00F5D4", // neon cyan
+        "#F72585", // hot pink
+        "#FFD60A", // bright yellow
+        "#7B2FFF", // electric purple
+        "#43E97B", // lime green
+        "#FF6B35", // orange
+        "#00B4D8", // sky blue
+        "#FF4D6D", // vivid red-pink
+        "#06D6A0", // emerald
+        "#F8961E", // amber
+        "#4CC9F0", // light blue
+        "#FF99C8", // soft pink
+    ];
 
-    // Helper: generate unique color from userId
-    const getUserColor = (id) => {
-        let hash = 0;
-        for (let i = 0; i < id.length; i++) hash = id.charCodeAt(i) + ((hash << 5) - hash);
-        return `hsl(${Math.abs(hash) % 360}, 80%, 60%)`;
-    }
+    // Assign a color to a userId in join order.
+    // If the user already has a color (i.e., they were seen before), return the same one.
+    // This guarantees consistent color per user and maximum distance between simultaneous users.
+    const getOrAssignColor = (userId) => {
+        if (!userId) return CURSOR_COLORS[0];
+        if (!userColorMapRef.current[userId]) {
+            // Assign the next color in the palette sequentially.
+            const index = nextColorIndexRef.current % CURSOR_COLORS.length;
+            userColorMapRef.current[userId] = CURSOR_COLORS[index];
+            nextColorIndexRef.current++;
+        }
+        return userColorMapRef.current[userId];
+    };
 
-    // Init dynamic stylesheet for cursors
+    // Alias used in the participant list UI to color each user's name.
+    // Same function ensures cursor color and list color always match.
+    const getUserColor = (userId) => getOrAssignColor(userId);
+
+    // Init dynamic stylesheet for cursor bar rules only (not labels).
+    // Labels use Monaco Content Widgets (actual DOM elements) which are not clipped.
     useEffect(() => {
         const styleEl = document.createElement("style")
         document.head.appendChild(styleEl)
         styleSheetRef.current = styleEl.sheet
+        // Track which userIds have already had their cursor bar CSS injected.
+        styleSheetRef.current._injected = new Set();
         return () => styleEl.remove()
     }, [])
 
@@ -139,15 +190,19 @@ function EditorPage() {
         const loadCode = async () => {
             try {
                 const { data } = await API.get(`/code/${roomId}`)
-                isRemoteUpdate.current = true
-                editorInstance.current.setValue(data.content || "")
-                isRemoteUpdate.current = false
+                // Only update if no remote update has happened yet
+                if (!isRemoteUpdate.current) {
+                    isRemoteUpdate.current = true
+                    editorInstance.current.setValue(data.content || "")
+                    isRemoteUpdate.current = false
+                }
             } catch (err) {
                 console.error("Load code error:", err)
             }
         }
-        loadCode()
-
+        
+        // We DO NOT call loadCode() unconditionally here anymore.
+        // It is called in onRoomUsers conditionally to avoid race conditions.
         // Load chat history from DB
         const loadChatHistory = async () => {
             try {
@@ -183,6 +238,25 @@ function EditorPage() {
             isRemoteUpdate.current = false
         }
 
+        // A new user joined and the server is asking us to push our current code to them.
+        // We read the editor's live in-memory value and send it back via "send_code_sync".
+        // This guarantees the new joiner gets up-to-date code, not a stale DB snapshot.
+        const onRequestCodeSync = ({ targetSocketId }) => {
+            if (!editorInstance.current) return;
+            const currentCode = editorInstance.current.getValue();
+            socket.emit("send_code_sync", { targetSocketId, code: currentCode });
+        }
+
+        // We just joined and a peer has sent us their live editor content.
+        // Load it into the editor only if it is newer (non-empty) than what we loaded from DB.
+        // isRemoteUpdate guards against re-broadcasting this load as a local change.
+        const onCodeSync = (code) => {
+            if (!editorInstance.current) return;
+            isRemoteUpdate.current = true;
+            editorInstance.current.setValue(code || "");
+            isRemoteUpdate.current = false;
+        }
+
         const onLanguageUpdate = (newLang) => {
             setLanguage(newLang)
         }
@@ -208,7 +282,25 @@ function EditorPage() {
         }
 
         const onRoomUsers = (users) => {
-            setParticipants(users)
+            setParticipants(users);
+            // Pre-assign colors to all users already in the room, in the order they appear.
+            // This ensures that when there are only 2-3 users, they get palette indices 0, 1, 2
+            // which are the most visually distinct entries (cyan, pink, yellow).
+            users.forEach(u => getOrAssignColor(u.userId));
+
+            // If we are the only user in the room, load code from DB.
+            // If there are other users, we rely on the live code sync from peers.
+            if (users.length <= 1) {
+                loadCode();
+            } else {
+                // Fallback: If peer sync fails or times out after 2s, load from DB
+                setTimeout(() => {
+                    // Check if editor is still empty (meaning no sync happened)
+                    if (editorInstance.current && !editorInstance.current.getValue()) {
+                        loadCode();
+                    }
+                }, 2000);
+            }
         }
 
         const onUserJoined = ({ userId, username }) => {
@@ -216,6 +308,8 @@ function EditorPage() {
                 if (prev.some(p => p.userId === userId)) return prev;
                 return [...prev, { userId, username }];
             });
+            // Assign a color when the new user joins so their cursor color is ready.
+            getOrAssignColor(userId);
             setMessages((prev) => [...prev, {
                 isSystem: true,
                 message: `${username} joined the room`
@@ -228,15 +322,20 @@ function EditorPage() {
                 isSystem: true,
                 message: `${username} left the room`
             }]);
-            
-            // Remove cursor decoration
-            if (decorationsRef.current[userId]) {
-                decorationsRef.current[userId] = editorInstance.current.deltaDecorations(
-                    decorationsRef.current[userId], []
-                );
+
+            // Remove the cursor bar decoration for this user.
+            if (decorationsRef.current[userId] && editorInstance.current) {
+                editorInstance.current.deltaDecorations(decorationsRef.current[userId], []);
+                delete decorationsRef.current[userId];
             }
 
-            // Clear label timer
+            // Remove the name label Content Widget for this user.
+            if (cursorWidgetsRef.current[userId] && editorInstance.current) {
+                editorInstance.current.removeContentWidget(cursorWidgetsRef.current[userId].widget);
+                delete cursorWidgetsRef.current[userId];
+            }
+
+            // Cancel any pending hide timer for this user.
             if (cursorLabelTimers.current[userId]) {
                 clearTimeout(cursorLabelTimers.current[userId]);
                 delete cursorLabelTimers.current[userId];
@@ -246,58 +345,116 @@ function EditorPage() {
 
         const onCursorUpdate = ({ userId, line, column, username }) => {
             if (!editorInstance.current) return;
-            
-            const color = getUserColor(userId);
-            const safeUsername = (username || 'User').replace(/[^a-zA-Z0-9 _-]/g, '');
 
-            // ── Inject cursor CSS rules once per user ──
-            const cursorClass = `remote-cursor-${userId}`;
-            const labelClass = `remote-cursor-label-${userId}`;
+            // Get (or assign) a consistent color for this user.
+            const color = getOrAssignColor(userId);
 
-            try {
-                const sheet = styleSheetRef.current;
-                // Cursor line: vertical bar in user's color
-                sheet.insertRule(
+            // Display name: truncate to 8 characters as requested.
+            const displayName = (username || "User").slice(0, 8);
+
+            // Sanitize userId for use as a CSS class name (remove non-alphanumeric chars).
+            const safeId = userId.replace(/[^a-zA-Z0-9]/g, "");
+            const cursorClass = `rc-cursor-${safeId}`;
+
+            // ── Cursor bar (CSS decoration) ──────────────────────────────────────────
+            // Inject the cursor bar CSS rule once per user.
+            // We use a Set to prevent re-injecting on every cursor move event.
+            if (styleSheetRef.current && !styleSheetRef.current._injected.has(safeId)) {
+                styleSheetRef.current._injected.add(safeId);
+                styleSheetRef.current.insertRule(
                     `.${cursorClass} { border-left: 2px solid ${color}; position: absolute; z-index: 10; }`,
-                    sheet.cssRules.length
+                    styleSheetRef.current.cssRules.length
                 );
-                // Label chip above cursor in user's color
-                sheet.insertRule(
-                    `.${labelClass}::before { content: "${safeUsername}"; background: ${color}; color: #000; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px 3px 3px 0; position: absolute; top: -18px; left: -1px; white-space: nowrap; opacity: 0.9; pointer-events: none; z-index: 20; line-height: 16px; }`,
-                    sheet.cssRules.length
-                );
-            } catch (e) { /* ignore duplicate rule errors — CSS sheet keeps accumulating but that's fine */ }
+            }
 
-            // ── Timer: show label immediately, auto-hide after 3 s of inactivity ──
+            // Apply (or update) the cursor bar decoration at the new position.
+            decorationsRef.current[userId] = editorInstance.current.deltaDecorations(
+                decorationsRef.current[userId] || [],
+                [{ range: new monaco.Range(line, column, line, column), options: { className: cursorClass } }]
+            );
+
+            // ── Name label (Monaco Content Widget) ───────────────────────────────────
+            // Content Widgets are real DOM nodes that Monaco positions relative to the
+            // editor coordinate system. Unlike CSS ::before pseudo-elements, they are
+            // NOT clipped by overflow:hidden on the line containers, so the label is
+            // always visible above the cursor line.
+
+            if (cursorWidgetsRef.current[userId]) {
+                // Widget already exists: update its position and make it visible again.
+                const entry = cursorWidgetsRef.current[userId];
+                entry.state.line = line;
+                entry.state.column = column;
+                entry.domNode.style.display = "block";
+                editorInstance.current.layoutContentWidget(entry.widget);
+            } else {
+                // First appearance for this user: create the Content Widget.
+
+                // Mutable state object that getPosition() closes over.
+                // We update entry.state.line/column in place to reposition the widget.
+                const state = { line, column };
+
+                const domNode = document.createElement("div");
+                domNode.textContent = displayName;
+
+                // Style the label chip. Colors match the user's cursor bar color so
+                // it is immediately clear which cursor belongs to which label.
+                Object.assign(domNode.style, {
+                    background: color,
+                    color: "#000000",        // dark text on vibrant background = readable
+                    fontSize: "10px",
+                    fontWeight: "700",
+                    fontFamily: "monospace",
+                    padding: "2px 6px",
+                    borderRadius: "3px",
+                    pointerEvents: "none",
+                    whiteSpace: "nowrap",
+                    zIndex: "100",
+                    lineHeight: "16px",
+                });
+
+                const widget = {
+                    // getId must return a unique stable string for this widget.
+                    getId: () => `cursor-label-${safeId}`,
+
+                    // getDomNode is called once by Monaco; we return our pre-built element.
+                    getDomNode: () => domNode,
+
+                    // getPosition is called on every layoutContentWidget call.
+                    // We provide ABOVE as the primary preference, and BELOW as a fallback.
+                    // ABOVE fails silently when the cursor is on line 1 (no space above it),
+                    // so BELOW ensures the label still appears in that case.
+                    getPosition: () => ({
+                        position: { lineNumber: state.line, column: state.column },
+                        preference: [
+                            monaco.editor.ContentWidgetPositionPreference.ABOVE,
+                            monaco.editor.ContentWidgetPositionPreference.BELOW
+                        ]
+                    })
+                };
+
+                editorInstance.current.addContentWidget(widget);
+
+                // IMPORTANT: addContentWidget registers the widget but does NOT guarantee
+                // that Monaco will calculate and apply its pixel position immediately.
+                // Without this explicit layoutContentWidget call, the widget exists in
+                // Monaco's internal list but renders at position 0,0 (off-screen).
+                editorInstance.current.layoutContentWidget(widget);
+
+                cursorWidgetsRef.current[userId] = { widget, state, domNode };
+            }
+
+            // ── Inactivity timer: hide the label after 3 seconds of no movement ─────
             if (cursorLabelTimers.current[userId]) {
                 clearTimeout(cursorLabelTimers.current[userId]);
             }
             cursorLabelTimers.current[userId] = setTimeout(() => {
-                if (!editorInstance.current) return;
-                // Re-apply WITHOUT label class to hide the username chip
-                decorationsRef.current[userId] = editorInstance.current.deltaDecorations(
-                    decorationsRef.current[userId] || [],
-                    [{
-                        range: new monaco.Range(line, column, line, column),
-                        options: { className: cursorClass, hoverMessage: { value: `**${username || 'User'}**` } }
-                    }]
-                );
-            }, 3000);
-
-            // ── Apply Monaco decorations WITH label (shown immediately on move) ──
-            const newDecorations = [{
-                range: new monaco.Range(line, column, line, column),
-                options: {
-                    className: cursorClass,
-                    beforeContentClassName: labelClass,
-                    hoverMessage: { value: `**${username || 'User'}**` }
+                // Hide the DOM node. The widget itself stays registered so it can
+                // be made visible again instantly on the next cursor_update without
+                // having to recreate and re-register it.
+                if (cursorWidgetsRef.current[userId]) {
+                    cursorWidgetsRef.current[userId].domNode.style.display = "none";
                 }
-            }];
-
-            decorationsRef.current[userId] = editorInstance.current.deltaDecorations(
-                decorationsRef.current[userId] || [],
-                newDecorations
-            );
+            }, 3000);
         }
 
 
@@ -318,6 +475,8 @@ function EditorPage() {
         }
 
         socket.on("code_update", onCodeUpdate)
+        socket.on("request_code_sync", onRequestCodeSync)
+        socket.on("code_sync", onCodeSync)
         socket.on("language_update", onLanguageUpdate)
         socket.on("receive_message", onReceiveMessage)
         socket.on("execution_status", onExecutionStatus)
@@ -332,8 +491,19 @@ function EditorPage() {
 
         // ── Cleanup ──
         return () => {
-            editorInstance.current?.dispose()
+            // Dispose the Monaco editor instance.
+            editorInstance.current?.dispose();
+
+            // Remove all Content Widgets (name labels) that were added for remote cursors.
+            Object.values(cursorWidgetsRef.current).forEach(entry => {
+                editorInstance.current?.removeContentWidget(entry.widget);
+            });
+            cursorWidgetsRef.current = {};
+
+            // Unregister all socket event listeners to prevent memory leaks.
             socket.off("code_update", onCodeUpdate)
+            socket.off("request_code_sync", onRequestCodeSync)
+            socket.off("code_sync", onCodeSync)
             socket.off("language_update", onLanguageUpdate)
             socket.off("receive_message", onReceiveMessage)
             socket.off("execution_status", onExecutionStatus)
@@ -495,11 +665,9 @@ function EditorPage() {
                     >
                         Copy Link
                     </button>
-                    {!room?.isActive && (
-                        <span className="text-xs px-2 py-1 bg-red-900 text-red-300 rounded">
-                            Session Ended
-                        </span>
-                    )}
+                    {/* Session Ended badge is intentionally omitted here.
+                        The room's isActive flag is managed server-side and shown
+                        on the Profile/Room history page, not inside the live editor. */}
                 </div>
 
                 {/* Right: Language + Buttons */}

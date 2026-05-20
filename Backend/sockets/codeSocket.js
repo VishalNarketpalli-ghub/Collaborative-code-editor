@@ -19,36 +19,63 @@ export default function codeSocket(io, socket) {
             return socket.emit("join_error", "Room not found");
         }
 
-        if (room.password && room.password !== password) {
-            return socket.emit("join_error", "Incorrect room password");
+        // Verify the user is allowed in this room.
+        //
+        // We do NOT re-validate the password here. The HTTP API (/room/join) already
+        // handled authentication and added the user to room.participants before the
+        // client ever emits this socket event. If we checked the password here,
+        // it would always fail because the client does not send the password to the socket.
+        //
+        // Instead, we trust the server-side state: if the user is in room.participants,
+        // they were already authenticated by the HTTP API. This is the secure approach.
+        const isParticipant = room.participants.some(
+            (p) => p.toString() === userId
+        );
+
+        if (!isParticipant) {
+            // This covers unauthenticated direct-link access attempts.
+            return socket.emit("join_error", "You are not a participant of this room.");
         }
 
-        if (room.bannedUsers && room.bannedUsers.includes(userId)) {
-            return socket.emit("join_error", "You have been banned from this room");
+        // Block banned users from the socket layer as a second line of defense.
+        if (room.bannedUsers && room.bannedUsers.some(b => b.toString() === userId)) {
+            return socket.emit("join_error", "You have been banned from this room.");
         }
 
         socket.join(roomId);
 
-        if (!room.participants.includes(userId)) {
-            room.participants.push(userId);
-            await room.save();
-        }
-
-        // Get actual online users
+        // Get all sockets currently in the room (AFTER this socket joined).
         const sockets = await io.in(roomId).fetchSockets();
         const activeUsers = sockets.map(s => ({
             userId: s.data.userId,
             username: s.data.username || "Unknown"
         }));
 
-        // Send full list to the user who just joined
+        // Send full online user list to the user who just joined.
         socket.emit("room_users", activeUsers);
 
-        // Notify others
+        // Request a live code sync from an existing peer (not the joiner themselves).
+        // This ensures the new joiner gets the current in-memory editor state, not just
+        // the last database snapshot. We pick one existing peer arbitrarily.
+        const peers = sockets.filter(s => s.data.userId !== userId);
+        if (peers.length > 0) {
+            // Ask the first available peer to send their current code to the new joiner.
+            // The peer will respond with a "send_code_sync" event targeted at the new socket id.
+            peers[0].emit("request_code_sync", { targetSocketId: socket.id });
+        }
+
+        // Notify others that this user has joined.
         socket.to(roomId).emit("user_joined", {
             userId,
             username
         });
+    });
+
+    // CODE PUSH: a peer sends their current code to a specific socket.
+    // This is triggered by "request_code_sync" above and emitted by the peer's client.
+    socket.on("send_code_sync", ({ targetSocketId, code }) => {
+        // Forward the code directly to the new joiner's socket.
+        io.to(targetSocketId).emit("code_sync", code);
     });
 
     // LEAVE ROOM

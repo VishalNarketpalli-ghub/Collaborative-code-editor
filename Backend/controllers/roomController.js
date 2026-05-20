@@ -57,9 +57,13 @@ export const joinRoom = async (req, res) => {
             return res.status(403).json({ message: "This session has ended" })
         }
 
-        // Validate password
+        // Validate password.
+        // IMPORTANT: We use 403 (Forbidden), NOT 401 (Unauthorized).
+        // The frontend axios interceptor treats 401 as "token expired → log out".
+        // 403 means "your token is valid but you lack permission for this action",
+        // which is the correct semantic and will NOT trigger a logout.
         if (room.password && room.password !== password) {
-            return res.status(401).json({ message: "Incorrect room password" });
+            return res.status(403).json({ message: "Incorrect room password" });
         }
 
         // Check if user is banned
@@ -175,20 +179,26 @@ export const reopenSession = async (req, res) => {
         //if room not found
         if (!room) return res.status(404).json({ message: "Room not found" })
 
-        //making sure user is host
-        if (room.createdBy.toString() !== userId) {
+        //making sure user is host — use String() on both sides for safe comparison
+        if (String(room.createdBy) !== String(userId)) {
             return res.status(403).json({ message: "Only the host can reopen the session" })
         }
 
         room.isActive = true
+
+        // Ensure the host is still in participants (safety net — they should always be)
+        if (!room.participants.some(p => String(p) === String(userId))) {
+            room.participants.push(userId);
+        }
+
         await room.save()
 
-        // Clear old chat messages on reopen
+        // Clear old chat messages on reopen so the new session starts fresh
         await ChatMessage.deleteMany({ room: room._id })
 
         res.status(200).json(room)
-    }catch(err){
-        res.status(500).json({message: err.message})
+    } catch(err) {
+        res.status(500).json({ message: err.message })
     }
 }
 
