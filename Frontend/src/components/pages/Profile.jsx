@@ -98,13 +98,20 @@ function Profile() {
         }
     };
 
-    // ── Rejoin / Reopen room ─────────────────────────────────────────────────
     const handleRejoin = async (room) => {
         const isCreator = room.createdBy?._id === user?._id;
 
         if (!room.isActive && isCreator) {
             try {
                 await API.patch(`/room/${room.roomId}/reopen`);
+
+                // Update local state immediately so the card reflects the reopened status
+                // if the host returns to Profile without a full page reload.
+                setRooms((prev) =>
+                    prev.map((r) =>
+                        r.roomId === room.roomId ? { ...r, isActive: true } : r
+                    )
+                );
             } catch (err) {
                 alert(err.response?.data?.message || "Failed to reopen session");
                 return;

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react"
-import { useParams, useLocation, useNavigate } from "react-router-dom"
+import { useEffect, useRef, useState, useCallback } from "react"
+import { useParams, useNavigate } from "react-router-dom"
 import * as monaco from "monaco-editor"
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
 import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
@@ -9,161 +9,227 @@ import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 import API from "../../utils/axios"
 import { getSocket } from "../../socket-files/socket"
 import { useAuth } from "../../context/AuthContext"
+import FileExplorer from "../editor/FileExplorer"
+import TabBar from "../editor/TabBar"
+import "../editor/editor.css"
 
+// Configure Monaco worker URLs once at module level.
 self.MonacoEnvironment = {
     getWorker(_, label) {
-        if (label === 'json') {
-            return new jsonWorker()
-        }
-        if (label === 'css' || label === 'scss' || label === 'less') {
-            return new cssWorker()
-        }
-        if (label === 'html' || label === 'handlebars' || label === 'razor') {
-            return new htmlWorker()
-        }
-        if (label === 'typescript' || label === 'javascript') {
-            return new tsWorker()
-        }
+        if (label === 'json')                              return new jsonWorker()
+        if (['css', 'scss', 'less'].includes(label))      return new cssWorker()
+        if (['html', 'handlebars', 'razor'].includes(label)) return new htmlWorker()
+        if (['typescript', 'javascript'].includes(label)) return new tsWorker()
         return new editorWorker()
     }
 }
 
+// ── Language helpers ─────────────────────────────────────────────────────────
+
+// Derive Monaco language from a filename extension.
+function languageFromFilename(filename) {
+    const EXT_MAP = {
+        js: "javascript", jsx: "javascript",
+        ts: "typescript", tsx: "typescript",
+        py: "python", java: "java",
+        cpp: "cpp", cc: "cpp", cxx: "cpp",
+        c: "c", cs: "csharp",
+        go: "go", rs: "rust",
+        rb: "ruby", php: "php",
+        html: "html", css: "css",
+        json: "json", md: "markdown",
+        sh: "shell", sql: "sql",
+        xml: "xml", yaml: "yaml", yml: "yaml",
+    }
+    const ext = filename?.split(".").pop()?.toLowerCase() || ""
+    return EXT_MAP[ext] || "plaintext"
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+
 function EditorPage() {
     const { roomId } = useParams()
-    const location = useLocation()
     const navigate = useNavigate()
     const { user } = useAuth()
 
-    const editorRef = useRef(null)
-    const editorInstance = useRef(null)
-    const isRemoteUpdate = useRef(false)
+    // ── Refs ──────────────────────────────────────────────────────────────────
 
-    // decorationsRef: tracks the Monaco decoration IDs for each remote user's cursor bar.
-    // Key = userId, Value = array of decoration IDs returned by deltaDecorations.
-    const decorationsRef = useRef({})
+    const editorRef        = useRef(null)   // DOM node for Monaco to mount into
+    const editorInstance   = useRef(null)   // monaco.editor.IStandaloneCodeEditor
+    const isRemoteUpdate   = useRef(false)  // prevents echo-back of remote edits
 
-    // styleSheetRef: the CSSStyleSheet for injecting per-user cursor bar rules.
-    const styleSheetRef = useRef(null)
+    // Per-user cursor decorations: { userId -> decorationId[] }
+    const decorationsRef     = useRef({})
+    // Injected CSS stylesheet for cursor bar rules.
+    const styleSheetRef      = useRef(null)
+    // Monaco Content Widgets for remote user name labels.
+    const cursorWidgetsRef   = useRef({})
+    // Color map: userId -> hex color string.
+    const userColorMapRef    = useRef({})
+    // Monotonic counter for next palette index.
+    const nextColorIndexRef  = useRef(0)
+    // Hide-label timers: userId -> setTimeout handle.
+    const cursorLabelTimers  = useRef({})
 
-    // cursorWidgetsRef: tracks the Monaco Content Widget for each remote user's name label.
-    // Key = userId, Value = { widget, state, domNode }
-    // Content Widgets are the correct Monaco API for overlaying DOM elements without clipping.
-    const cursorWidgetsRef = useRef({})
+    // In-memory content cache: filename -> string
+    // Prevents unnecessary API round-trips when switching between already-loaded tabs.
+    const fileContentCache = useRef({})
 
-    // userColorMapRef: maps userId -> color string. Colors are assigned in join order
-    // so that the first two users always get maximally different colors (indices 0 and 1),
-    // regardless of userId hash collisions.
-    const userColorMapRef = useRef({})
+    // Track the active filename in a ref so socket handlers always read the
+    // current value without needing to be recreated on every state change.
+    const activeFileRef = useRef(null)
 
-    // nextColorIndexRef: counter that advances each time a new user gets a color.
-    const nextColorIndexRef = useRef(0)
+    // ── State ─────────────────────────────────────────────────────────────────
 
-    // cursorLabelTimers: one setTimeout handle per userId for hiding the name label
-    // after 3 seconds of inactivity.
-    const cursorLabelTimers = useRef({})
+    const [room,             setRoom]             = useState(null)
+    const [isHost,           setIsHost]           = useState(false)
+    const [messages,         setMessages]         = useState([])
+    const [inputMsg,         setInputMsg]         = useState("")
+    const [stdin,            setStdin]            = useState("")
+    const [output,           setOutput]           = useState({ text: "Run code to see output...", isError: false })
+    const [isRunning,        setIsRunning]        = useState(false)
+    const [participants,     setParticipants]     = useState([])
+    const [showOnlineUsers,  setShowOnlineUsers]  = useState(false)
+    const [loading,          setLoading]          = useState(true)
+    const [leftWidth,        setLeftWidth]        = useState(18)  // file-explorer panel width %
+    const [editorWidth,      setEditorWidth]      = useState(52)  // editor panel width %
 
-    const [room, setRoom] = useState(null)
-    const [isHost, setIsHost] = useState(false)
-    const [language, setLanguage] = useState(location.state?.language || "javascript")
-    const [messages, setMessages] = useState([])
-    const [inputMsg, setInputMsg] = useState("")
-    const [stdin, setStdin] = useState("")
-    const [output, setOutput] = useState({ text: "Run code to see output...", isError: false })
-    const [isRunning, setIsRunning] = useState(false)
-    const [participants, setParticipants] = useState([])
-    const [showOnlineUsers, setShowOnlineUsers] = useState(false)
-    const [loading, setLoading] = useState(true)
-    const [leftWidth, setLeftWidth] = useState(70)
+    // File-system state
+    const [files,      setFiles]      = useState([])    // list of file metadata objects
+    const [activeFile, setActiveFile] = useState(null)  // currently open filename
 
     const chatEndRef = useRef(null)
 
-    // Color palette ordered for maximum visual distance.
-    // The ordering ensures indices 0 and 1 look nothing alike, 0-2 look nothing alike, etc.
-    // This matters when participant count is low (e.g., 2 users always get cyan + hot pink).
+    // ── Color palette ─────────────────────────────────────────────────────────
+    // Ordered for maximum visual distance so the first two users always get
+    // maximally different colors.
     const CURSOR_COLORS = [
-        "#00F5D4", // neon cyan
-        "#F72585", // hot pink
-        "#FFD60A", // bright yellow
-        "#7B2FFF", // electric purple
-        "#43E97B", // lime green
-        "#FF6B35", // orange
-        "#00B4D8", // sky blue
-        "#FF4D6D", // vivid red-pink
-        "#06D6A0", // emerald
-        "#F8961E", // amber
-        "#4CC9F0", // light blue
-        "#FF99C8", // soft pink
-    ];
+        "#00F5D4", "#F72585", "#FFD60A", "#7B2FFF",
+        "#43E97B", "#FF6B35", "#00B4D8", "#FF4D6D",
+        "#06D6A0", "#F8961E", "#4CC9F0", "#FF99C8",
+    ]
 
-    // Assign a color to a userId in join order.
-    // If the user already has a color (i.e., they were seen before), return the same one.
-    // This guarantees consistent color per user and maximum distance between simultaneous users.
     const getOrAssignColor = (userId) => {
-        if (!userId) return CURSOR_COLORS[0];
+        if (!userId) return CURSOR_COLORS[0]
         if (!userColorMapRef.current[userId]) {
-            // Assign the next color in the palette sequentially.
-            const index = nextColorIndexRef.current % CURSOR_COLORS.length;
-            userColorMapRef.current[userId] = CURSOR_COLORS[index];
-            nextColorIndexRef.current++;
+            const index = nextColorIndexRef.current % CURSOR_COLORS.length
+            userColorMapRef.current[userId] = CURSOR_COLORS[index]
+            nextColorIndexRef.current++
         }
-        return userColorMapRef.current[userId];
-    };
+        return userColorMapRef.current[userId]
+    }
 
-    // Alias used in the participant list UI to color each user's name.
-    // Same function ensures cursor color and list color always match.
-    const getUserColor = (userId) => getOrAssignColor(userId);
+    const getUserColor = (userId) => getOrAssignColor(userId)
 
-    // Init dynamic stylesheet for cursor bar rules only (not labels).
-    // Labels use Monaco Content Widgets (actual DOM elements) which are not clipped.
+    // ── Stylesheet for cursor bar decorations ─────────────────────────────────
     useEffect(() => {
         const styleEl = document.createElement("style")
         document.head.appendChild(styleEl)
         styleSheetRef.current = styleEl.sheet
-        // Track which userIds have already had their cursor bar CSS injected.
-        styleSheetRef.current._injected = new Set();
+        styleSheetRef.current._injected = new Set()
         return () => styleEl.remove()
     }, [])
 
-    // ── STEP 1: Fetch room + handle direct-link join ──────────────────────────
+    // ── STEP 1: Fetch room, auto-reopen if needed, validate access ────────────
     useEffect(() => {
-        // Guard: wait until user is loaded from AuthContext
         if (!user) return
 
         const initRoom = async () => {
             try {
-                // Fetch room details
                 const { data: roomData } = await API.get(`/room/${roomId}`)
 
-                // Determine isHost from DB (survives refresh)
-                const hostId = roomData.createdBy?._id || roomData.createdBy
-                setIsHost(hostId === user?._id)
-                setLanguage(roomData.language)
+                const hostId    = roomData.createdBy?._id || roomData.createdBy
+                const userIsHost = String(hostId) === String(user?._id)
+                setIsHost(userIsHost)
                 setRoom(roomData)
 
-                // Direct-link join: check if user is already a participant
-                const userId = user?._id
+                // Non-hosts cannot be on an ended session's editor page.
+                if (!roomData.isActive && !userIsHost) {
+                    alert("This session has ended.")
+                    navigate("/profile")
+                    return
+                }
+
+                // If the host navigates directly to this page while the room is
+                // still marked inactive (e.g. via browser history after ending
+                // a session), reopen it automatically so the DB state is consistent
+                // and non-hosts can rejoin after the host shares the link.
+                if (!roomData.isActive && userIsHost) {
+                    try {
+                        await API.patch(`/room/${roomId}/reopen`)
+                    } catch (err) {
+                        alert(err.response?.data?.message || "Failed to reopen session")
+                        navigate("/profile")
+                        return
+                    }
+                }
+
+                // Direct-link / refresh join: if the user is not yet a participant,
+                // join via REST so the socket's participant check passes.
+                const userId       = String(user?._id)
                 const isParticipant = roomData.participants?.some(
-                    (p) => (p._id || p) === userId
+                    (p) => String(p._id || p) === userId
                 )
 
                 if (!isParticipant) {
-                    // Has password → redirect to join-room page
                     if (roomData.password) {
                         navigate(`/join-room?roomId=${roomId}`)
                         return
                     }
-                    // No password → auto-join
                     await API.post("/room/join", { roomId, password: "" })
                 }
 
+                // Load the file list for this room.
+                const { data: fileList } = await API.get(`/code/${roomId}/files`)
+                setFiles(fileList)
+
                 setLoading(false)
             } catch (err) {
+                const msg = err.response?.data?.message
+                if (msg) alert(msg)
                 console.error("Room init error:", err)
-                navigate("/room")
+                navigate("/profile")
             }
         }
+
         initRoom()
     }, [roomId, user])
+
+    // ── Switch active file ────────────────────────────────────────────────────
+    // Loads file content from the cache or API, then updates Monaco.
+    const switchToFile = useCallback(async (filename) => {
+        if (!filename || !editorInstance.current) return
+
+        activeFileRef.current = filename
+        setActiveFile(filename)
+
+        // Apply the correct Monaco language for this file.
+        const lang = languageFromFilename(filename)
+        monaco.editor.setModelLanguage(editorInstance.current.getModel(), lang)
+
+        // Serve from in-memory cache if available (avoids re-fetching on tab switch).
+        if (fileContentCache.current[filename] !== undefined) {
+            isRemoteUpdate.current = true
+            editorInstance.current.setValue(fileContentCache.current[filename])
+            isRemoteUpdate.current = false
+            return
+        }
+
+        // Fetch from DB.
+        try {
+            const { data } = await API.get(`/code/${roomId}/file/${encodeURIComponent(filename)}`)
+            const content = data.content || ""
+            fileContentCache.current[filename] = content
+            isRemoteUpdate.current = true
+            editorInstance.current.setValue(content)
+            isRemoteUpdate.current = false
+        } catch (err) {
+            console.error("Failed to load file content:", err)
+        }
+
+        // Notify peers which file is now active (informational, not mandatory).
+        getSocket().emit("active_file_switch", { roomId, filename })
+    }, [roomId])
 
     // ── STEP 2: Init editor + socket listeners ────────────────────────────────
     useEffect(() => {
@@ -171,39 +237,27 @@ function EditorPage() {
 
         const socket = getSocket()
 
-        // Join the socket room — include username so backend can populate participant list
         socket.emit("join-room", { roomId, username: user?.username || "Unknown" })
 
-        // Init Monaco editor
+        // Create the Monaco editor instance.
         editorInstance.current = monaco.editor.create(editorRef.current, {
             value: "",
-            language,
+            language: "plaintext",
             theme: "vs-dark",
             automaticLayout: true,
             minimap: { enabled: false },
             scrollBeyondLastLine: false,
             smoothScrolling: true,
             fontSize: 14,
+            fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+            fontLigatures: true,
+            tabSize: 4,
+            wordWrap: "off",
+            renderLineHighlight: "gutter",
+            cursorSmoothCaretAnimation: "on",
         })
 
-        // Initial load of code from DB
-        const loadCode = async () => {
-            try {
-                const { data } = await API.get(`/code/${roomId}`)
-                // Only update if no remote update has happened yet
-                if (!isRemoteUpdate.current) {
-                    isRemoteUpdate.current = true
-                    editorInstance.current.setValue(data.content || "")
-                    isRemoteUpdate.current = false
-                }
-            } catch (err) {
-                console.error("Load code error:", err)
-            }
-        }
-        
-        // We DO NOT call loadCode() unconditionally here anymore.
-        // It is called in onRoomUsers conditionally to avoid race conditions.
-        // Load chat history from DB
+        // Load chat history.
         const loadChatHistory = async () => {
             try {
                 const { data } = await API.get(`/chat/${roomId}`)
@@ -214,14 +268,20 @@ function EditorPage() {
         }
         loadChatHistory()
 
-        // Local edits → broadcast
+        // Broadcast local code edits.
         editorInstance.current.onDidChangeModelContent(() => {
             if (isRemoteUpdate.current) return
             const code = editorInstance.current.getValue()
-            socket.emit("code_change", { roomId, code })
+
+            // Keep the in-memory cache up to date as the user types.
+            if (activeFileRef.current) {
+                fileContentCache.current[activeFileRef.current] = code
+            }
+
+            socket.emit("code_change", { roomId, code, filename: activeFileRef.current })
         })
 
-        // Local cursor moves → broadcast
+        // Broadcast local cursor moves.
         editorInstance.current.onDidChangeCursorPosition((e) => {
             socket.emit("cursor_move", {
                 roomId,
@@ -230,35 +290,78 @@ function EditorPage() {
             })
         })
 
-        // ── Socket event listeners ──
-        const onCodeUpdate = (code) => {
-            if (code === editorInstance.current.getValue()) return
+        // ── Applies a remote code edit without resetting the cursor ────────────
+        // We use pushEditOperations instead of setValue to preserve cursor
+        // position and selection across collaborative edits.
+        const applyRemoteCode = (code) => {
+            if (!editorInstance.current) return
+            const model = editorInstance.current.getModel()
+            if (!model || code === model.getValue()) return
+
+            const savedPosition  = editorInstance.current.getPosition()
+            const savedSelection = editorInstance.current.getSelection()
+
             isRemoteUpdate.current = true
-            editorInstance.current.setValue(code)
+            model.pushEditOperations(
+                [],
+                [{ range: model.getFullModelRange(), text: code }],
+                () => null
+            )
             isRemoteUpdate.current = false
+
+            if (savedPosition)  editorInstance.current.setPosition(savedPosition)
+            if (savedSelection) editorInstance.current.setSelection(savedSelection)
         }
 
-        // A new user joined and the server is asking us to push our current code to them.
-        // We read the editor's live in-memory value and send it back via "send_code_sync".
-        // This guarantees the new joiner gets up-to-date code, not a stale DB snapshot.
+        // ── Socket event handlers ─────────────────────────────────────────────
+
+        // A remote user changed code in their active file.
+        // Only apply if it targets the same file we are currently viewing.
+        const onCodeUpdate = ({ code, filename }) => {
+            if (filename !== undefined && filename !== activeFileRef.current) {
+                // Update cache for the other file so we see fresh content on switch.
+                if (filename) fileContentCache.current[filename] = code
+                return
+            }
+            applyRemoteCode(code)
+            if (activeFileRef.current) {
+                fileContentCache.current[activeFileRef.current] = code
+            }
+        }
+
+        // A peer is asking us to push our current editor state to a new joiner.
         const onRequestCodeSync = ({ targetSocketId }) => {
-            if (!editorInstance.current) return;
-            const currentCode = editorInstance.current.getValue();
-            socket.emit("send_code_sync", { targetSocketId, code: currentCode });
+            if (!editorInstance.current) return
+            socket.emit("send_code_sync", {
+                targetSocketId,
+                code: editorInstance.current.getValue(),
+                filename: activeFileRef.current,
+            })
         }
 
-        // We just joined and a peer has sent us their live editor content.
-        // Load it into the editor only if it is newer (non-empty) than what we loaded from DB.
-        // isRemoteUpdate guards against re-broadcasting this load as a local change.
-        const onCodeSync = (code) => {
-            if (!editorInstance.current) return;
-            isRemoteUpdate.current = true;
-            editorInstance.current.setValue(code || "");
-            isRemoteUpdate.current = false;
+        // We just joined and a peer has sent us their current editor state.
+        // setValue is acceptable here because we have no existing content yet.
+        const onCodeSync = ({ code, filename }) => {
+            if (!editorInstance.current) return
+
+            // If the peer told us which file they have open, switch to it.
+            if (filename && filename !== activeFileRef.current) {
+                switchToFile(filename)
+                return
+            }
+
+            isRemoteUpdate.current = true
+            editorInstance.current.setValue(code || "")
+            isRemoteUpdate.current = false
+            if (activeFileRef.current) {
+                fileContentCache.current[activeFileRef.current] = code || ""
+            }
         }
 
         const onLanguageUpdate = (newLang) => {
-            setLanguage(newLang)
+            // Language change events from the room-level language selector are
+            // no longer the primary mechanism (language is per-file). We still
+            // handle them for backward compatibility.
         }
 
         const onReceiveMessage = (msg) => {
@@ -270,7 +373,7 @@ function EditorPage() {
             setIsRunning(true)
         }
 
-        const onCodeOutput = ({ stdout, stderr, exitCode }) => {
+        const onCodeOutput = ({ stdout, stderr }) => {
             if (stderr && stderr.trim()) {
                 setOutput({ text: stderr.trim(), isError: true })
             } else if (stdout && stdout.trim()) {
@@ -282,183 +385,123 @@ function EditorPage() {
         }
 
         const onRoomUsers = (users) => {
-            setParticipants(users);
-            // Pre-assign colors to all users already in the room, in the order they appear.
-            // This ensures that when there are only 2-3 users, they get palette indices 0, 1, 2
-            // which are the most visually distinct entries (cyan, pink, yellow).
-            users.forEach(u => getOrAssignColor(u.userId));
+            setParticipants(users)
+            users.forEach((u) => getOrAssignColor(u.userId))
 
-            // If we are the only user in the room, load code from DB.
-            // If there are other users, we rely on the live code sync from peers.
-            if (users.length <= 1) {
-                loadCode();
-            } else {
-                // Fallback: If peer sync fails or times out after 2s, load from DB
+            // If we are the only user, load the active file from DB.
+            // Otherwise rely on peer code-sync (onCodeSync).
+            if (users.length <= 1 && activeFileRef.current) {
+                switchToFile(activeFileRef.current)
+            } else if (users.length > 1 && activeFileRef.current) {
+                // Fallback: if peer sync doesn't arrive in 2 s, load from DB.
                 setTimeout(() => {
-                    // Check if editor is still empty (meaning no sync happened)
                     if (editorInstance.current && !editorInstance.current.getValue()) {
-                        loadCode();
+                        switchToFile(activeFileRef.current)
                     }
-                }, 2000);
+                }, 2000)
             }
         }
 
         const onUserJoined = ({ userId, username }) => {
             setParticipants((prev) => {
-                if (prev.some(p => p.userId === userId)) return prev;
-                return [...prev, { userId, username }];
-            });
-            // Assign a color when the new user joins so their cursor color is ready.
-            getOrAssignColor(userId);
-            setMessages((prev) => [...prev, {
-                isSystem: true,
-                message: `${username} joined the room`
-            }]);
+                if (prev.some((p) => p.userId === userId)) return prev
+                return [...prev, { userId, username }]
+            })
+            getOrAssignColor(userId)
+            setMessages((prev) => [...prev, { isSystem: true, message: `${username} joined the room` }])
         }
 
         const onUserLeft = ({ userId, username }) => {
-            setParticipants((prev) => prev.filter((p) => p.userId !== userId));
-            setMessages((prev) => [...prev, {
-                isSystem: true,
-                message: `${username} left the room`
-            }]);
+            setParticipants((prev) => prev.filter((p) => p.userId !== userId))
+            setMessages((prev) => [...prev, { isSystem: true, message: `${username} left the room` }])
 
-            // Remove the cursor bar decoration for this user.
+            // Remove cursor decorations for the departed user.
             if (decorationsRef.current[userId] && editorInstance.current) {
-                editorInstance.current.deltaDecorations(decorationsRef.current[userId], []);
-                delete decorationsRef.current[userId];
+                editorInstance.current.deltaDecorations(decorationsRef.current[userId], [])
+                delete decorationsRef.current[userId]
             }
-
-            // Remove the name label Content Widget for this user.
             if (cursorWidgetsRef.current[userId] && editorInstance.current) {
-                editorInstance.current.removeContentWidget(cursorWidgetsRef.current[userId].widget);
-                delete cursorWidgetsRef.current[userId];
+                editorInstance.current.removeContentWidget(cursorWidgetsRef.current[userId].widget)
+                delete cursorWidgetsRef.current[userId]
             }
-
-            // Cancel any pending hide timer for this user.
             if (cursorLabelTimers.current[userId]) {
-                clearTimeout(cursorLabelTimers.current[userId]);
-                delete cursorLabelTimers.current[userId];
+                clearTimeout(cursorLabelTimers.current[userId])
+                delete cursorLabelTimers.current[userId]
             }
         }
 
-
         const onCursorUpdate = ({ userId, line, column, username }) => {
-            if (!editorInstance.current) return;
+            if (!editorInstance.current) return
 
-            // Get (or assign) a consistent color for this user.
-            const color = getOrAssignColor(userId);
+            const color       = getOrAssignColor(userId)
+            const displayName = (username || "User").slice(0, 8)
+            const safeId      = userId.replace(/[^a-zA-Z0-9]/g, "")
+            const cursorClass = `rc-cursor-${safeId}`
 
-            // Display name: truncate to 8 characters as requested.
-            const displayName = (username || "User").slice(0, 8);
-
-            // Sanitize userId for use as a CSS class name (remove non-alphanumeric chars).
-            const safeId = userId.replace(/[^a-zA-Z0-9]/g, "");
-            const cursorClass = `rc-cursor-${safeId}`;
-
-            // ── Cursor bar (CSS decoration) ──────────────────────────────────────────
-            // Inject the cursor bar CSS rule once per user.
-            // We use a Set to prevent re-injecting on every cursor move event.
+            // Inject cursor bar CSS rule once per user.
             if (styleSheetRef.current && !styleSheetRef.current._injected.has(safeId)) {
-                styleSheetRef.current._injected.add(safeId);
+                styleSheetRef.current._injected.add(safeId)
                 styleSheetRef.current.insertRule(
                     `.${cursorClass} { border-left: 2px solid ${color}; position: absolute; z-index: 10; }`,
                     styleSheetRef.current.cssRules.length
-                );
+                )
             }
 
-            // Apply (or update) the cursor bar decoration at the new position.
             decorationsRef.current[userId] = editorInstance.current.deltaDecorations(
                 decorationsRef.current[userId] || [],
                 [{ range: new monaco.Range(line, column, line, column), options: { className: cursorClass } }]
-            );
+            )
 
-            // ── Name label (Monaco Content Widget) ───────────────────────────────────
-            // Content Widgets are real DOM nodes that Monaco positions relative to the
-            // editor coordinate system. Unlike CSS ::before pseudo-elements, they are
-            // NOT clipped by overflow:hidden on the line containers, so the label is
-            // always visible above the cursor line.
-
+            // Content Widget for the name label.
             if (cursorWidgetsRef.current[userId]) {
-                // Widget already exists: update its position and make it visible again.
-                const entry = cursorWidgetsRef.current[userId];
-                entry.state.line = line;
-                entry.state.column = column;
-                entry.domNode.style.display = "block";
-                editorInstance.current.layoutContentWidget(entry.widget);
+                const entry = cursorWidgetsRef.current[userId]
+                entry.state.line   = line
+                entry.state.column = column
+                entry.domNode.style.display = "block"
+                editorInstance.current.layoutContentWidget(entry.widget)
             } else {
-                // First appearance for this user: create the Content Widget.
-
-                // Mutable state object that getPosition() closes over.
-                // We update entry.state.line/column in place to reposition the widget.
-                const state = { line, column };
-
-                const domNode = document.createElement("div");
-                domNode.textContent = displayName;
-
-                // Style the label chip. Colors match the user's cursor bar color so
-                // it is immediately clear which cursor belongs to which label.
+                const state   = { line, column }
+                const domNode = document.createElement("div")
+                domNode.textContent = displayName
                 Object.assign(domNode.style, {
-                    background: color,
-                    color: "#000000",        // dark text on vibrant background = readable
-                    fontSize: "10px",
-                    fontWeight: "700",
-                    fontFamily: "monospace",
-                    padding: "2px 6px",
-                    borderRadius: "3px",
-                    pointerEvents: "none",
-                    whiteSpace: "nowrap",
-                    zIndex: "100",
-                    lineHeight: "16px",
-                });
+                    background: color, color: "#000",
+                    fontSize: "10px", fontWeight: "700",
+                    fontFamily: "monospace", padding: "2px 6px",
+                    borderRadius: "3px", pointerEvents: "none",
+                    whiteSpace: "nowrap", zIndex: "100", lineHeight: "16px",
+                })
 
                 const widget = {
-                    // getId must return a unique stable string for this widget.
                     getId: () => `cursor-label-${safeId}`,
-
-                    // getDomNode is called once by Monaco; we return our pre-built element.
                     getDomNode: () => domNode,
-
-                    // getPosition is called on every layoutContentWidget call.
-                    // We provide ABOVE as the primary preference, and BELOW as a fallback.
-                    // ABOVE fails silently when the cursor is on line 1 (no space above it),
-                    // so BELOW ensures the label still appears in that case.
                     getPosition: () => ({
                         position: { lineNumber: state.line, column: state.column },
                         preference: [
                             monaco.editor.ContentWidgetPositionPreference.ABOVE,
-                            monaco.editor.ContentWidgetPositionPreference.BELOW
+                            monaco.editor.ContentWidgetPositionPreference.BELOW,
                         ]
                     })
-                };
+                }
 
-                editorInstance.current.addContentWidget(widget);
-
-                // IMPORTANT: addContentWidget registers the widget but does NOT guarantee
-                // that Monaco will calculate and apply its pixel position immediately.
-                // Without this explicit layoutContentWidget call, the widget exists in
-                // Monaco's internal list but renders at position 0,0 (off-screen).
-                editorInstance.current.layoutContentWidget(widget);
-
-                cursorWidgetsRef.current[userId] = { widget, state, domNode };
+                editorInstance.current.addContentWidget(widget)
+                editorInstance.current.layoutContentWidget(widget)
+                cursorWidgetsRef.current[userId] = { widget, state, domNode }
             }
 
-            // ── Inactivity timer: hide the label after 3 seconds of no movement ─────
+            // Hide the name label after 3 seconds of inactivity.
             if (cursorLabelTimers.current[userId]) {
-                clearTimeout(cursorLabelTimers.current[userId]);
+                clearTimeout(cursorLabelTimers.current[userId])
             }
             cursorLabelTimers.current[userId] = setTimeout(() => {
-                // Hide the DOM node. The widget itself stays registered so it can
-                // be made visible again instantly on the next cursor_update without
-                // having to recreate and re-register it.
-                if (cursorWidgetsRef.current[userId]) {
-                    cursorWidgetsRef.current[userId].domNode.style.display = "none";
-                }
-            }, 3000);
+                cursorWidgetsRef.current[userId]?.domNode &&
+                    (cursorWidgetsRef.current[userId].domNode.style.display = "none")
+            }, 3000)
         }
 
-
-        // Session ended by host → navigate everyone away
+        // Session ended by host — non-hosts are redirected away.
+        // The host does NOT receive this event (the socket handler uses socket.to()
+        // which excludes the sender, which prevents the race condition where both
+        // navigate("/profile") and navigate("/room") fire simultaneously).
         const onSessionEnded = () => {
             alert("The host has ended this session.")
             navigate("/room")
@@ -474,56 +517,118 @@ function EditorPage() {
             navigate("/profile")
         }
 
-        socket.on("code_update", onCodeUpdate)
+        // ── File system socket events (from peers/host) ───────────────────────
+
+        // A new file was created by the host — add it to the local list.
+        const onFileCreated = ({ file }) => {
+            setFiles((prev) => {
+                if (prev.some((f) => f.filename === file.filename)) return prev
+                return [...prev, file]
+            })
+        }
+
+        // A file was deleted by the host.
+        const onFileDeleted = ({ filename }) => {
+            setFiles((prev) => {
+                const remaining = prev.filter((f) => f.filename !== filename)
+
+                // If the currently open file was deleted, switch to the first remaining one.
+                if (activeFileRef.current === filename) {
+                    if (remaining.length > 0) {
+                        // Defer the file switch so React can flush the state update first.
+                        setTimeout(() => switchToFile(remaining[0].filename), 0)
+                    } else {
+                        activeFileRef.current = null
+                        setActiveFile(null)
+                        if (editorInstance.current) {
+                            isRemoteUpdate.current = true
+                            editorInstance.current.setValue("")
+                            isRemoteUpdate.current = false
+                        }
+                    }
+                }
+
+                return remaining
+            })
+        }
+
+        // A file was renamed by the host.
+        const onFileRenamed = ({ oldName, newName, newLanguage }) => {
+            setFiles((prev) =>
+                prev.map((f) =>
+                    f.filename === oldName
+                        ? { ...f, filename: newName, language: newLanguage }
+                        : f
+                )
+            )
+            // Migrate the in-memory cache to the new name.
+            if (fileContentCache.current[oldName] !== undefined) {
+                fileContentCache.current[newName] = fileContentCache.current[oldName]
+                delete fileContentCache.current[oldName]
+            }
+            if (activeFileRef.current === oldName) {
+                activeFileRef.current = newName
+                setActiveFile(newName)
+                if (editorInstance.current) {
+                    monaco.editor.setModelLanguage(editorInstance.current.getModel(), newLanguage)
+                }
+            }
+        }
+
+        // Register all listeners.
+        socket.on("code_update",       onCodeUpdate)
         socket.on("request_code_sync", onRequestCodeSync)
-        socket.on("code_sync", onCodeSync)
-        socket.on("language_update", onLanguageUpdate)
-        socket.on("receive_message", onReceiveMessage)
-        socket.on("execution_status", onExecutionStatus)
-        socket.on("code_output", onCodeOutput)
-        socket.on("room_users", onRoomUsers)
-        socket.on("user_joined", onUserJoined)
-        socket.on("user_left", onUserLeft)
-        socket.on("cursor_update", onCursorUpdate)
-        socket.on("session_ended", onSessionEnded)
-        socket.on("kicked", onKicked)
-        socket.on("banned", onBanned)
+        socket.on("code_sync",         onCodeSync)
+        socket.on("language_update",   onLanguageUpdate)
+        socket.on("receive_message",   onReceiveMessage)
+        socket.on("execution_status",  onExecutionStatus)
+        socket.on("code_output",       onCodeOutput)
+        socket.on("room_users",        onRoomUsers)
+        socket.on("user_joined",       onUserJoined)
+        socket.on("user_left",         onUserLeft)
+        socket.on("cursor_update",     onCursorUpdate)
+        socket.on("session_ended",     onSessionEnded)
+        socket.on("kicked",            onKicked)
+        socket.on("banned",            onBanned)
+        socket.on("file_created",      onFileCreated)
+        socket.on("file_deleted",      onFileDeleted)
+        socket.on("file_renamed",      onFileRenamed)
 
-        // ── Cleanup ──
         return () => {
-            // Dispose the Monaco editor instance.
-            editorInstance.current?.dispose();
+            editorInstance.current?.dispose()
+            Object.values(cursorWidgetsRef.current).forEach((entry) =>
+                editorInstance.current?.removeContentWidget(entry.widget)
+            )
+            cursorWidgetsRef.current = {}
 
-            // Remove all Content Widgets (name labels) that were added for remote cursors.
-            Object.values(cursorWidgetsRef.current).forEach(entry => {
-                editorInstance.current?.removeContentWidget(entry.widget);
-            });
-            cursorWidgetsRef.current = {};
-
-            // Unregister all socket event listeners to prevent memory leaks.
-            socket.off("code_update", onCodeUpdate)
+            socket.off("code_update",       onCodeUpdate)
             socket.off("request_code_sync", onRequestCodeSync)
-            socket.off("code_sync", onCodeSync)
-            socket.off("language_update", onLanguageUpdate)
-            socket.off("receive_message", onReceiveMessage)
-            socket.off("execution_status", onExecutionStatus)
-            socket.off("code_output", onCodeOutput)
-            socket.off("room_users", onRoomUsers)
-            socket.off("user_joined", onUserJoined)
-            socket.off("user_left", onUserLeft)
-            socket.off("cursor_update", onCursorUpdate)
-            socket.off("session_ended", onSessionEnded)
-            socket.off("kicked", onKicked)
-            socket.off("banned", onBanned)
+            socket.off("code_sync",         onCodeSync)
+            socket.off("language_update",   onLanguageUpdate)
+            socket.off("receive_message",   onReceiveMessage)
+            socket.off("execution_status",  onExecutionStatus)
+            socket.off("code_output",       onCodeOutput)
+            socket.off("room_users",        onRoomUsers)
+            socket.off("user_joined",       onUserJoined)
+            socket.off("user_left",         onUserLeft)
+            socket.off("cursor_update",     onCursorUpdate)
+            socket.off("session_ended",     onSessionEnded)
+            socket.off("kicked",            onKicked)
+            socket.off("banned",            onBanned)
+            socket.off("file_created",      onFileCreated)
+            socket.off("file_deleted",      onFileDeleted)
+            socket.off("file_renamed",      onFileRenamed)
         }
     }, [loading, roomId])
 
-    // ── Sync editor language when language state changes ──────────────────────
+    // ── Open the first file once files are loaded ─────────────────────────────
+    // This runs when the file list first becomes non-empty and we don't yet
+    // have an active file, so the editor is not left blank on entry.
     useEffect(() => {
-        if (editorInstance.current) {
-            monaco.editor.setModelLanguage(editorInstance.current.getModel(), language)
+        if (files.length > 0 && !activeFile && editorInstance.current) {
+            switchToFile(files[0].filename)
         }
-    }, [language])
+    }, [files, activeFile, switchToFile])
 
     // ── Scroll chat to bottom on new messages ─────────────────────────────────
     useEffect(() => {
@@ -532,58 +637,60 @@ function EditorPage() {
 
     // ── Handlers ──────────────────────────────────────────────────────────────
 
-    const handleLanguageChange = (e) => {
-        if (!isHost) return
-        const newLang = e.target.value
-        if (window.confirm(`Change language to ${newLang}? This will affect all participants.`)) {
-            setLanguage(newLang)
-            getSocket().emit("language_change", { roomId, language: newLang })
-        }
-    }
-
-    // Host kick/ban controls
-    const handleKick = (targetUserId, targetUsername) => {
-        if (!isHost) return
-        if (window.confirm(`Are you sure you want to remove ${targetUsername} from the room?`)) {
-            getSocket().emit("kick_user", { roomId, targetUserId })
-        }
-    }
-
-    const handleBan = (targetUserId, targetUsername) => {
-        if (!isHost) return
-        if (window.confirm(`Are you sure you want to BAN ${targetUsername}? They will not be able to rejoin.`)) {
-            getSocket().emit("ban_user", { roomId, targetUserId })
-        }
-    }
-
-    // Save code to DB — host only
+    // Save the currently active file to DB.
     const handleSave = async () => {
-        if (!isHost || !editorInstance.current) return
+        if (!isHost || !editorInstance.current || !activeFile) return
         try {
-            await API.put(`/code/${roomId}`, { content: editorInstance.current.getValue() })
-            alert("Code saved!")
+            await API.put(
+                `/code/${roomId}/file/${encodeURIComponent(activeFile)}`,
+                { content: editorInstance.current.getValue() }
+            )
+            // Brief visual feedback without a blocking alert.
+            setOutput((prev) => ({ ...prev, text: `"${activeFile}" saved.`, isError: false }))
+            setTimeout(() => setOutput((prev) =>
+                prev.text === `"${activeFile}" saved.`
+                    ? { text: "Run code to see output...", isError: false }
+                    : prev
+            ), 2000)
         } catch (err) {
             alert(err.response?.data?.message || "Save failed")
         }
     }
 
-    // Run code via socket — broadcasts output to ALL users in room
+    // Run the code in the currently active file.
     const handleRun = () => {
         if (!editorInstance.current || isRunning) return
         const code = editorInstance.current.getValue()
         if (!code.trim()) return
 
+        const lang = activeFile ? languageFromFilename(activeFile) : "plaintext"
+
         getSocket().emit("run_code", {
             roomId,
             source_code: code,
-            language,   // send language name string (e.g. "python"), Piston handles it
+            language: lang,
             stdin
         })
         setIsRunning(true)
         setOutput({ text: "Running...", isError: false })
     }
 
-    // Send chat message
+    // Host kick / ban
+    const handleKick = (targetUserId, targetUsername) => {
+        if (!isHost) return
+        if (window.confirm(`Remove ${targetUsername} from the room?`)) {
+            getSocket().emit("kick_user", { roomId, targetUserId })
+        }
+    }
+
+    const handleBan = (targetUserId, targetUsername) => {
+        if (!isHost) return
+        if (window.confirm(`Ban ${targetUsername}? They will not be able to rejoin.`)) {
+            getSocket().emit("ban_user", { roomId, targetUserId })
+        }
+    }
+
+    // Send a chat message.
     const sendMessage = () => {
         if (!inputMsg.trim()) return
         getSocket().emit("send-message", { roomId, message: inputMsg })
@@ -597,251 +704,287 @@ function EditorPage() {
         }
     }
 
-    // Copy room link
+    // Copy room link to clipboard.
     const copyRoomLink = () => {
         navigator.clipboard.writeText(window.location.href)
         alert("Room link copied!")
     }
 
-    // End session — host only, broadcasts to everyone
+    // End session — host only. The socket handler broadcasts session_ended to
+    // peers only (not the host) so the host's navigate() is not overwritten.
     const handleEndSession = async () => {
         if (!isHost) return
-        if (!window.confirm("Have you saved the code? Click OK to end the session. All participants will be removed.")) return
+        if (!window.confirm("Have you saved your files? Click OK to end the session.")) return
         getSocket().emit("end_session", { roomId })
         navigate("/profile")
     }
 
-    // Leave room
     const handleLeaveRoom = () => {
         getSocket().emit("leave_room", { roomId })
         navigate("/profile")
     }
 
-    // Horizontal resize
-    const startDrag = () => {
-        const onMove = (e) => {
-            const newWidth = (e.clientX / window.innerWidth) * 100
-            if (newWidth > 30 && newWidth < 80) setLeftWidth(newWidth)
+    // ── File explorer callbacks ────────────────────────────────────────────────
+    const handleFileSelect = useCallback((filename) => {
+        if (filename && filename !== activeFileRef.current) {
+            switchToFile(filename)
         }
-        const stopDrag = () => {
+    }, [switchToFile])
+
+    const handleFilesChange = useCallback((updatedFiles) => {
+        setFiles(updatedFiles)
+    }, [])
+
+    // ── Drag handles ──────────────────────────────────────────────────────────
+
+    // Left drag: resize file explorer width.
+    const startLeftDrag = () => {
+        const onMove = (e) => {
+            const pct = (e.clientX / window.innerWidth) * 100
+            if (pct > 8 && pct < 35) setLeftWidth(pct)
+        }
+        const stop = () => {
             window.removeEventListener("mousemove", onMove)
-            window.removeEventListener("mouseup", stopDrag)
+            window.removeEventListener("mouseup", stop)
         }
         window.addEventListener("mousemove", onMove)
-        window.addEventListener("mouseup", stopDrag)
+        window.addEventListener("mouseup", stop)
+    }
+
+    // Right drag: resize editor vs right panel.
+    const startRightDrag = () => {
+        const onMove = (e) => {
+            const pct = (e.clientX / window.innerWidth) * 100
+            const rightPanelPct = pct - leftWidth
+            if (rightPanelPct > 25 && rightPanelPct < 75) setEditorWidth(rightPanelPct)
+        }
+        const stop = () => {
+            window.removeEventListener("mousemove", onMove)
+            window.removeEventListener("mouseup", stop)
+        }
+        window.addEventListener("mousemove", onMove)
+        window.addEventListener("mouseup", stop)
     }
 
     // ── Loading state ─────────────────────────────────────────────────────────
     if (loading) {
         return (
-            <div className="h-screen bg-gray-950 text-white flex items-center justify-center">
-                <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            <div className="editor-loading">
+                <div className="editor-spinner" />
             </div>
         )
     }
 
     // ── Render ────────────────────────────────────────────────────────────────
-    return (
-        <div className="h-screen flex flex-col bg-gray-950 text-white overflow-hidden">
+    const rightPanelWidth = 100 - leftWidth - editorWidth
 
-            {/* TOP BAR */}
-            <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800 bg-gray-900 shrink-0">
-                {/* Left: Room ID + Copy */}
-                <div className="flex items-center gap-3">
-                    <span className="text-xs text-gray-400">Room:</span>
-                    <span className="font-mono bg-gray-800 px-2 py-1 rounded text-sm">{roomId}</span>
+    return (
+        <div className="editor-root">
+
+            {/* ── TOP BAR ────────────────────────────────────────────────── */}
+            <div className="editor-topbar">
+
+                {/* Left: room ID + copy buttons */}
+                <div className="topbar-left">
+                    <span className="topbar-label">Room</span>
+                    <code className="topbar-room-id">{roomId}</code>
                     <button
-                        onClick={() => {
-                            navigator.clipboard.writeText(roomId)
-                            alert("Room ID copied!")
-                        }}
-                        className="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded cursor-pointer"
+                        className="topbar-btn"
+                        onClick={() => { navigator.clipboard.writeText(roomId); alert("Room ID copied!") }}
                     >
                         Copy ID
                     </button>
-                    <button
-                        onClick={copyRoomLink}
-                        className="text-xs px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded cursor-pointer"
-                    >
+                    <button className="topbar-btn topbar-btn--primary" onClick={copyRoomLink}>
                         Copy Link
                     </button>
-                    {/* Session Ended badge is intentionally omitted here.
-                        The room's isActive flag is managed server-side and shown
-                        on the Profile/Room history page, not inside the live editor. */}
+                    {room?.title && (
+                        <span className="topbar-room-title">{room.title}</span>
+                    )}
                 </div>
 
-                {/* Right: Language + Buttons */}
-                <div className="flex items-center gap-2">
-                    {isHost ? (
-                        <select
-                            value={language}
-                            onChange={handleLanguageChange}
-                            className="bg-gray-800 text-sm px-2 py-1 rounded cursor-pointer border border-gray-700"
-                        >
-                            <option value="javascript">JavaScript</option>
-                            <option value="python">Python</option>
-                            <option value="cpp">C++</option>
-                            <option value="java">Java</option>
-                        </select>
-                    ) : (
-                        <span className="bg-gray-800 text-sm px-2 py-1 rounded capitalize">
-                            {language}
+                {/* Right: action buttons */}
+                <div className="topbar-right">
+                    {activeFile && (
+                        <span className="topbar-active-file">
+                            {activeFile}
+                            <span className="topbar-lang-badge">
+                                {languageFromFilename(activeFile)}
+                            </span>
                         </span>
                     )}
 
                     {isHost && (
-                        <button
-                            onClick={handleSave}
-                            className="text-sm px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded cursor-pointer"
-                        >
+                        <button className="topbar-btn topbar-btn--save" onClick={handleSave}>
                             Save
                         </button>
                     )}
 
                     <button
+                        className={`topbar-btn topbar-btn--run${isRunning ? " topbar-btn--running" : ""}`}
                         onClick={handleRun}
                         disabled={isRunning}
-                        className={`text-sm px-3 py-1 rounded cursor-pointer ${isRunning ? "bg-green-800 opacity-60" : "bg-green-600 hover:bg-green-700"}`}
                     >
                         {isRunning ? "Running..." : "Run"}
                     </button>
 
                     {!isHost && (
-                        <button
-                            onClick={handleLeaveRoom}
-                            className="text-sm px-3 py-1 bg-gray-600 hover:bg-gray-700 rounded cursor-pointer"
-                        >
+                        <button className="topbar-btn" onClick={handleLeaveRoom}>
                             Leave Room
                         </button>
                     )}
 
                     {isHost && (
-                        <button
-                            onClick={handleEndSession}
-                            className="text-sm px-3 py-1 bg-red-600 hover:bg-red-700 rounded cursor-pointer"
-                        >
+                        <button className="topbar-btn topbar-btn--danger" onClick={handleEndSession}>
                             End Session
                         </button>
                     )}
                 </div>
             </div>
 
-            {/* MAIN LAYOUT */}
-            <div className="flex flex-1 min-h-0">
+            {/* ── MAIN LAYOUT ────────────────────────────────────────────── */}
+            <div className="editor-body">
 
-                {/* EDITOR */}
-                <div style={{ width: `${leftWidth}%` }} className="h-full flex flex-col min-w-0">
-                    <div ref={editorRef} className="flex-1" />
+                {/* FILE EXPLORER */}
+                <div className="editor-explorer" style={{ width: `${leftWidth}%` }}>
+                    <FileExplorer
+                        roomId={roomId}
+                        files={files}
+                        activeFile={activeFile}
+                        isHost={isHost}
+                        onFileSelect={handleFileSelect}
+                        onFilesChange={handleFilesChange}
+                        maxFiles={10}
+                    />
                 </div>
 
-                {/* DRAG HANDLE */}
-                <div
-                    onMouseDown={startDrag}
-                    className="w-1 bg-gray-700 hover:bg-blue-500 cursor-col-resize shrink-0"
-                />
+                {/* DRAG: explorer / editor */}
+                <div className="editor-drag-handle" onMouseDown={startLeftDrag} />
+
+                {/* EDITOR PANEL */}
+                <div className="editor-panel" style={{ width: `${editorWidth}%` }}>
+                    {/* Tab bar */}
+                    <TabBar
+                        files={files}
+                        activeFile={activeFile}
+                        onTabClick={handleFileSelect}
+                    />
+
+                    {/* Monaco mount point — always in the DOM so the ref stays stable.
+                        When no files exist an overlay covers it; when files are loaded
+                        the overlay disappears and Monaco becomes visible. */}
+                    <div
+                        ref={editorRef}
+                        className="editor-monaco"
+                        style={{ display: files.length === 0 ? "none" : "flex", flex: 1 }}
+                    />
+                    {files.length === 0 && (
+                        <div className="editor-empty-state">
+                            {isHost
+                                ? "Create a file in the explorer to start coding."
+                                : "Waiting for the host to create files."}
+                        </div>
+                    )}
+                </div>
+
+                {/* DRAG: editor / right panel */}
+                <div className="editor-drag-handle" onMouseDown={startRightDrag} />
 
                 {/* RIGHT PANEL */}
-                <div className="flex-1 flex flex-col min-w-0 bg-gray-900">
+                <div className="editor-right-panel" style={{ width: `${rightPanelWidth}%` }}>
 
-                    {/* OUTPUT + STDIN — combined terminal panel */}
-                    <div className="h-1/2 flex flex-col border-b border-gray-800">
-                        <div className="px-3 py-2 text-xs font-semibold text-gray-400 bg-gray-900 border-b border-gray-800 uppercase tracking-wide">
-                            Output
-                        </div>
-                        <div className={`flex-1 overflow-auto p-3 font-mono text-sm whitespace-pre-wrap ${output.isError ? "text-red-400" : "text-gray-300"}`}>
+                    {/* Output + stdin */}
+                    <div className="output-panel">
+                        <div className="panel-header">Output</div>
+                        <div className={`output-body${output.isError ? " output-body--error" : ""}`}>
                             {output.text}
                         </div>
-                        <div className="border-t border-gray-700 px-3 py-1 text-xs text-gray-500 bg-gray-900">
-                            stdin
-                        </div>
+                        <div className="panel-subheader">stdin</div>
                         <textarea
                             value={stdin}
                             onChange={(e) => setStdin(e.target.value)}
                             placeholder="Program input (stdin)..."
                             rows={2}
-                            className="w-full bg-gray-950 text-sm text-gray-300 px-3 py-2 resize-none outline-none font-mono border-t border-gray-800"
+                            className="stdin-input"
                         />
                     </div>
 
-                    {/* CHAT */}
-                    <div className="flex-1 flex flex-col min-h-0 relative">
-                        <div 
-                            className="px-3 py-2 text-xs font-semibold text-gray-400 bg-gray-900 border-b border-gray-800 uppercase tracking-wide cursor-pointer flex justify-between items-center hover:bg-gray-800"
+                    {/* Chat */}
+                    <div className="chat-panel">
+                        <div
+                            className="panel-header panel-header--clickable"
                             onClick={() => setShowOnlineUsers(!showOnlineUsers)}
                         >
-                            <span>Chat · {participants.length} online</span>
-                            <span className="text-gray-500">{showOnlineUsers ? "▼" : "▲"}</span>
+                            <span>Chat &middot; {participants.length} online</span>
+                            <span className="panel-header-caret">{showOnlineUsers ? "▼" : "▲"}</span>
                         </div>
 
-                        {/* Online Users Dropdown */}
+                        {/* Online users dropdown */}
                         {showOnlineUsers && (
-                            <div className="absolute top-8 left-0 right-0 bg-gray-800 border-b border-gray-700 z-20 max-h-40 overflow-y-auto">
+                            <div className="online-users-dropdown">
                                 {participants.map((p) => {
-                                    const pIsHost = p.userId === (room?.createdBy?._id || room?.createdBy);
-                                    const isMe = p.userId === user?._id;
+                                    const pIsHost = p.userId === (room?.createdBy?._id || room?.createdBy)
+                                    const isMe    = p.userId === user?._id
                                     return (
-                                        <div key={p.userId} className="px-3 py-2 text-sm text-gray-300 flex items-center justify-between border-b border-gray-700 last:border-0 group">
-                                            <div className="flex items-center gap-2">
-                                                <div className="w-2 h-2 rounded-full bg-green-500"></div>
-                                                <span style={{ color: getUserColor(p.userId) }}>{p.username}</span>
-                                                {pIsHost && <span className="text-xs text-yellow-500 font-bold ml-1">(Host)</span>}
-                                                {isMe && <span className="text-xs text-gray-500">(You)</span>}
+                                        <div key={p.userId} className="online-user-row group">
+                                            <div className="online-user-info">
+                                                <div className="online-dot" />
+                                                <span style={{ color: getUserColor(p.userId) }}>
+                                                    {p.username}
+                                                </span>
+                                                {pIsHost && <span className="badge badge--host">Host</span>}
+                                                {isMe    && <span className="badge badge--me">You</span>}
                                             </div>
-                                            
-                                            {/* Admin Controls */}
                                             {isHost && !isMe && (
-                                                <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                    <button 
+                                                <div className="host-actions">
+                                                    <button
+                                                        className="host-action-btn host-action-btn--kick"
                                                         onClick={() => handleKick(p.userId, p.username)}
-                                                        className="text-[10px] bg-red-600 hover:bg-red-500 px-2 py-1 rounded cursor-pointer"
                                                     >
                                                         Remove
                                                     </button>
-                                                    <button 
+                                                    <button
+                                                        className="host-action-btn host-action-btn--ban"
                                                         onClick={() => handleBan(p.userId, p.username)}
-                                                        className="text-[10px] bg-red-900 hover:bg-red-800 px-2 py-1 rounded cursor-pointer border border-red-700"
                                                     >
                                                         Ban
                                                     </button>
                                                 </div>
                                             )}
                                         </div>
-                                    );
+                                    )
                                 })}
                             </div>
                         )}
 
-                        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                        {/* Messages */}
+                        <div className="chat-messages">
                             {messages.map((msg, i) => (
-                                <div key={i} className={`text-sm ${msg.isSystem ? "text-center my-2" : ""}`}>
+                                <div key={i} className={`chat-msg${msg.isSystem ? " chat-msg--system" : ""}`}>
                                     {msg.isSystem ? (
-                                        <span className="text-xs text-gray-500 bg-gray-800 px-2 py-1 rounded-full">
-                                            {msg.message}
-                                        </span>
+                                        <span className="chat-msg-system-text">{msg.message}</span>
                                     ) : (
                                         <>
-                                            <span className="text-blue-400 font-medium">
+                                            <span className="chat-msg-sender">
                                                 {msg.sender?.username || "User"}:&nbsp;
                                             </span>
-                                            <span className="text-gray-300 break-words">{msg.message}</span>
+                                            <span className="chat-msg-body">{msg.message}</span>
                                         </>
                                     )}
                                 </div>
                             ))}
                             <div ref={chatEndRef} />
                         </div>
-                        <div className="p-2 border-t border-gray-800 flex gap-2 bg-gray-900">
+
+                        {/* Input */}
+                        <div className="chat-input-row">
                             <input
                                 value={inputMsg}
                                 onChange={(e) => setInputMsg(e.target.value)}
                                 onKeyDown={handleChatKeyDown}
                                 placeholder="Type a message... (Enter to send)"
-                                className="flex-1 bg-gray-950 text-sm text-gray-200 px-3 py-2 rounded border border-gray-700 outline-none focus:border-blue-500 min-w-0"
+                                className="chat-input"
                             />
-                            <button
-                                onClick={sendMessage}
-                                className="px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm cursor-pointer shrink-0"
-                            >
+                            <button className="chat-send-btn" onClick={sendMessage}>
                                 Send
                             </button>
                         </div>

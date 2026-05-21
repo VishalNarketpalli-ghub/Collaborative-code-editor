@@ -1,13 +1,22 @@
 import Room from "../models/Room.js";
+import CodeFile from "../models/Codefile.js";
 import { runCode } from "../services/executeService.js";
+import { languageFromFilename } from "../controllers/codeController.js";
+
+// Helper: cast any value to a comparable string (handles ObjectId, string, etc.)
+const toStr = (val) => String(val);
+
+// Maximum files per room — must match the value in codeController.js.
+const MAX_FILES_PER_ROOM = 10;
 
 export default function codeSocket(io, socket) {
 
-    socket.on("join-room", async ({ roomId, password, username }) => {
+    // ── JOIN ROOM ─────────────────────────────────────────────────────────────
+    socket.on("join-room", async ({ roomId, username }) => {
 
         const userId = socket.data.userId;
 
-        // Store username on both socket.data (for fetchSockets) and socket.user (for disconnect)
+        // Store the username on socket.data so fetchSockets() can read it later.
         if (username) {
             socket.data.username = username;
             socket.user.username = username;
@@ -19,121 +28,150 @@ export default function codeSocket(io, socket) {
             return socket.emit("join_error", "Room not found");
         }
 
-        // Verify the user is allowed in this room.
-        //
-        // We do NOT re-validate the password here. The HTTP API (/room/join) already
-        // handled authentication and added the user to room.participants before the
-        // client ever emits this socket event. If we checked the password here,
-        // it would always fail because the client does not send the password to the socket.
-        //
-        // Instead, we trust the server-side state: if the user is in room.participants,
-        // they were already authenticated by the HTTP API. This is the secure approach.
-        const isParticipant = room.participants.some(
-            (p) => p.toString() === userId
-        );
-
-        if (!isParticipant) {
-            // This covers unauthenticated direct-link access attempts.
-            return socket.emit("join_error", "You are not a participant of this room.");
+        // Non-hosts cannot join an inactive (ended) session.
+        // Hosts can always enter their own room regardless of isActive because
+        // they may be reopening it via the EditorPage auto-reopen flow.
+        const isHost = toStr(room.createdBy) === toStr(userId);
+        if (!room.isActive && !isHost) {
+            return socket.emit("join_error", "This session has ended");
         }
 
-        // Block banned users from the socket layer as a second line of defense.
-        if (room.bannedUsers && room.bannedUsers.some(b => b.toString() === userId)) {
+        // Check bannedUsers BEFORE participants. A banned user may still be in
+        // room.participants (banning does not remove them from the array in the
+        // DB). Checking here first prevents the participant check below from
+        // granting them entry.
+        const isBanned = room.bannedUsers && room.bannedUsers.some(
+            (b) => toStr(b) === toStr(userId)
+        );
+        if (isBanned) {
             return socket.emit("join_error", "You have been banned from this room.");
         }
 
-        socket.join(roomId);
-
-        // Get all sockets currently in the room (AFTER this socket joined).
-        const sockets = await io.in(roomId).fetchSockets();
-        const activeUsers = sockets.map(s => ({
-            userId: s.data.userId,
-            username: s.data.username || "Unknown"
-        }));
-
-        // Send full online user list to the user who just joined.
-        socket.emit("room_users", activeUsers);
-
-        // Request a live code sync from an existing peer (not the joiner themselves).
-        // This ensures the new joiner gets the current in-memory editor state, not just
-        // the last database snapshot. We pick one existing peer arbitrarily.
-        const peers = sockets.filter(s => s.data.userId !== userId);
-        if (peers.length > 0) {
-            // Ask the first available peer to send their current code to the new joiner.
-            // The peer will respond with a "send_code_sync" event targeted at the new socket id.
-            peers[0].emit("request_code_sync", { targetSocketId: socket.id });
+        // The REST API (/room/join) adds users to participants before they ever
+        // reach this socket event. Verifying again here is a second layer of
+        // defence against unauthenticated direct-socket access.
+        const isParticipant = room.participants.some(
+            (p) => toStr(p) === toStr(userId)
+        );
+        if (!isParticipant) {
+            return socket.emit("join_error", "You are not a participant of this room.");
         }
 
-        // Notify others that this user has joined.
-        socket.to(roomId).emit("user_joined", {
-            userId,
-            username
-        });
+        // All checks passed — join the Socket.IO room.
+        socket.join(roomId);
+
+        // Fetch all sockets currently in the room AFTER this socket joined.
+        const sockets = await io.in(roomId).fetchSockets();
+        const activeUsers = sockets.map((s) => ({
+            userId: s.data.userId,
+            username: s.data.username || "Unknown",
+        }));
+
+        // Send the full online-user list back to the user who just joined.
+        socket.emit("room_users", activeUsers);
+
+        // Request a live code sync from an existing peer so the new joiner gets
+        // the current in-memory editor state rather than just the last DB snapshot.
+        const peers = sockets.filter((s) => s.data.userId !== userId);
+        if (peers.length > 0) {
+            peers[0].emit("request_code_sync", {
+                targetSocketId: socket.id,
+                // Also ask the peer to send the current active filename so the
+                // new joiner can open the same file as everyone else.
+                requestActiveFile: true,
+            });
+        }
+
+        // Notify everyone else that this user joined.
+        socket.to(roomId).emit("user_joined", { userId, username });
     });
 
-    // CODE PUSH: a peer sends their current code to a specific socket.
-    // This is triggered by "request_code_sync" above and emitted by the peer's client.
-    socket.on("send_code_sync", ({ targetSocketId, code }) => {
-        // Forward the code directly to the new joiner's socket.
-        io.to(targetSocketId).emit("code_sync", code);
+    // ── CODE SYNC RELAY ───────────────────────────────────────────────────────
+    // A peer pushes their current code to the new joiner's socket.
+    // The server only relays — it does not store the transient state.
+    socket.on("send_code_sync", ({ targetSocketId, code, filename }) => {
+        io.to(targetSocketId).emit("code_sync", { code, filename });
     });
 
-    // LEAVE ROOM
-    socket.on("leave_room", async ({ roomId }) => {
+    // ── CODE CHANGE (broadcast) ───────────────────────────────────────────────
+    // Relay a code change to all other users in the room.
+    // The sender must actually be in the Socket.IO room to prevent a banned or
+    // kicked user whose socket is still alive from pushing edits.
+    socket.on("code_change", ({ roomId, code, filename }) => {
+        if (!socket.rooms.has(roomId)) return;
+        socket.to(roomId).emit("code_update", { code, filename });
+    });
+
+    // ── LEAVE ROOM ────────────────────────────────────────────────────────────
+    socket.on("leave_room", ({ roomId }) => {
         socket.leave(roomId);
         const userId = socket.data.userId;
         const username = socket.data.username;
         io.to(roomId).emit("user_left", { userId, username });
     });
 
-    // KICK USER (Host only)
+    // ── KICK USER (host only) ─────────────────────────────────────────────────
     socket.on("kick_user", async ({ roomId, targetUserId }) => {
         const userId = socket.data.userId;
         const room = await Room.findOne({ roomId });
-        if (!room || room.createdBy.toString() !== userId) return;
+        if (!room || toStr(room.createdBy) !== toStr(userId)) return;
 
-        // Find target user's socket
         const sockets = await io.in(roomId).fetchSockets();
-        const targetSocket = sockets.find(s => s.data.userId === targetUserId);
-        
+        const targetSocket = sockets.find((s) => s.data.userId === targetUserId);
+
         if (targetSocket) {
             targetSocket.emit("kicked");
             targetSocket.leave(roomId);
-            io.to(roomId).emit("user_left", { userId: targetUserId, username: targetSocket.data.username });
+            io.to(roomId).emit("user_left", {
+                userId: targetUserId,
+                username: targetSocket.data.username,
+            });
         }
     });
 
-    // BAN USER (Host only)
+    // ── BAN USER (host only) ──────────────────────────────────────────────────
     socket.on("ban_user", async ({ roomId, targetUserId }) => {
         const userId = socket.data.userId;
         const room = await Room.findOne({ roomId });
-        if (!room || room.createdBy.toString() !== userId) return;
+        if (!room || toStr(room.createdBy) !== toStr(userId)) return;
 
-        // Add to banned list
         if (!room.bannedUsers) room.bannedUsers = [];
-        if (!room.bannedUsers.includes(targetUserId)) {
+        const alreadyBanned = room.bannedUsers.some(
+            (b) => toStr(b) === toStr(targetUserId)
+        );
+        if (!alreadyBanned) {
             room.bannedUsers.push(targetUserId);
-            await room.save();
         }
 
-        // Force them out
+        // Remove the banned user from participants so that on every subsequent
+        // page load initRoom() triggers POST /room/join which correctly returns
+        // 403 Forbidden.
+        room.participants = room.participants.filter(
+            (p) => toStr(p) !== toStr(targetUserId)
+        );
+
+        await room.save();
+
+        // Disconnect their active socket from the room immediately.
         const sockets = await io.in(roomId).fetchSockets();
-        const targetSocket = sockets.find(s => s.data.userId === targetUserId);
-        
+        const targetSocket = sockets.find((s) => s.data.userId === targetUserId);
+
         if (targetSocket) {
             targetSocket.emit("banned");
             targetSocket.leave(roomId);
-            io.to(roomId).emit("user_left", { userId: targetUserId, username: targetSocket.data.username });
+            io.to(roomId).emit("user_left", {
+                userId: targetUserId,
+                username: targetSocket.data.username,
+            });
         }
     });
 
-    // LANGUAGE CHANGE : host only
+    // ── LANGUAGE CHANGE (host only) ───────────────────────────────────────────
     socket.on("language_change", async ({ roomId, language }) => {
-
-        const userId = socket.data.userId
+        const userId = socket.data.userId;
         const room = await Room.findOne({ roomId });
         if (!room) return;
-        if(room.createdBy.toString() !== userId) return
+        if (toStr(room.createdBy) !== toStr(userId)) return;
 
         room.language = language;
         await room.save();
@@ -141,19 +179,30 @@ export default function codeSocket(io, socket) {
         socket.to(roomId).emit("language_update", language);
     });
 
-    // CODE SYNC
-    socket.on("code_change", ({ roomId, code }) => {
-        socket.to(roomId).emit("code_update", code);
+    // ── END SESSION (host only) ───────────────────────────────────────────────
+    socket.on("end_session", async ({ roomId }) => {
+        const userId = socket.data.userId;
+        const room = await Room.findOne({ roomId });
+        if (!room) return;
+        if (toStr(room.createdBy) !== toStr(userId)) return;
+
+        room.isActive = false;
+        await room.save();
+
+        // Broadcast session_ended to everyone EXCEPT the host.
+        // The host has already navigated away in handleEndSession() before this
+        // event reaches the client, so sending it to the host would trigger a
+        // redundant navigate("/room") call from the onSessionEnded handler.
+        socket.to(roomId).emit("session_ended");
     });
 
-    //RUN CODE - broadcasting output to all users in room
+    // ── RUN CODE ──────────────────────────────────────────────────────────────
     socket.on("run_code", async ({ roomId, source_code, language, stdin }) => {
-        console.log(`[run_code] trigger for roomId: ${roomId}, lang: ${language}`);
+        console.log(`[run_code] roomId=${roomId}, lang=${language}`);
         try {
             io.to(roomId).emit("execution_status", "Running...");
 
             const result = await runCode(source_code, language, stdin);
-            console.log(`[run_code] result:`, result);
 
             if (result.statusCode === 200) {
                 io.to(roomId).emit("code_output", {
@@ -168,7 +217,6 @@ export default function codeSocket(io, socket) {
                     exitCode: result.statusCode,
                 });
             }
-
         } catch (err) {
             console.error("Run code error:", err.message);
             io.to(roomId).emit("code_output", {
@@ -178,17 +226,48 @@ export default function codeSocket(io, socket) {
         }
     });
 
-    socket.on("end_session",async({roomId})=>{
-        
-        const userId = socket.data.userId
-        const room = await Room.findOne({roomId})
-        if(!room) return
-        if(room.createdBy.toString() !== userId) return // only host
+    // ── FILE CREATED (host only, relayed to all peers) ────────────────────────
+    // The host creates a file via REST and then emits this event so all
+    // connected participants update their file explorer without a page refresh.
+    socket.on("file_created", async ({ roomId, file }) => {
+        const userId = socket.data.userId;
+        const room = await Room.findOne({ roomId });
+        if (!room || toStr(room.createdBy) !== toStr(userId)) return;
+        if (!socket.rooms.has(roomId)) return;
 
-        room.isActive = false
-        await room.save()
+        // Relay the new file metadata to every other participant.
+        socket.to(roomId).emit("file_created", { file });
+    });
 
-        //broadcast to everyone in the room
-        io.to(roomId).emit("session_ended")
-    })
+    // ── FILE DELETED (host only, relayed to all peers) ────────────────────────
+    socket.on("file_deleted", async ({ roomId, filename }) => {
+        const userId = socket.data.userId;
+        const room = await Room.findOne({ roomId });
+        if (!room || toStr(room.createdBy) !== toStr(userId)) return;
+        if (!socket.rooms.has(roomId)) return;
+
+        socket.to(roomId).emit("file_deleted", { filename });
+    });
+
+    // ── FILE RENAMED (host only, relayed to all peers) ────────────────────────
+    socket.on("file_renamed", async ({ roomId, oldName, newName, newLanguage }) => {
+        const userId = socket.data.userId;
+        const room = await Room.findOne({ roomId });
+        if (!room || toStr(room.createdBy) !== toStr(userId)) return;
+        if (!socket.rooms.has(roomId)) return;
+
+        socket.to(roomId).emit("file_renamed", { oldName, newName, newLanguage });
+    });
+
+    // ── ACTIVE FILE SWITCH (broadcast, any user) ──────────────────────────────
+    // Optional: when a user switches to a different file tab, broadcast so peers
+    // can see which file they are currently editing (used only for display).
+    socket.on("active_file_switch", ({ roomId, filename }) => {
+        if (!socket.rooms.has(roomId)) return;
+        socket.to(roomId).emit("peer_switched_file", {
+            userId: socket.data.userId,
+            username: socket.data.username,
+            filename,
+        });
+    });
 }
