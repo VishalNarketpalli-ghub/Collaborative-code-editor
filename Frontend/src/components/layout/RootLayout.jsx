@@ -1,12 +1,16 @@
 import Header from "./Header";
 import Footer from "./Footer";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 
 function RootLayout() {
+  const location = useLocation();
+
   return (
-    <div>
+    <div className="flex flex-col min-h-screen bg-gray-950 text-white">
       <Header />
-      <Outlet />
+      <main key={location.pathname} className="flex-grow page-fade-in flex flex-col">
+        <Outlet />
+      </main>
       <Footer />
     </div>
   );

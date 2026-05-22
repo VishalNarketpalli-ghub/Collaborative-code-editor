@@ -3,11 +3,13 @@ import { useForm } from "react-hook-form";
 import { useState } from "react";
 import API from "../../utils/axios"; // Axios instance for API calls
 import { useAuth } from "../../context/AuthContext";
+import { useToast } from "../../context/ToastContext";
 
 function Register() {
     // Hook for navigation between routes
     const navigate = useNavigate();
     const {login} = useAuth()
+    const { showToast } = useToast();
     // Loading state to disable button during API call
     const [loading, setLoading] = useState(false);
 
@@ -40,7 +42,7 @@ function Register() {
         } catch (err) {
             // Handle errors from backend or network
             console.error(err);
-            alert(err.response?.data?.message || "Registration failed");
+            showToast(err.response?.data?.message || "Registration failed", "error");
         } finally {
             // Reset loading state
             setLoading(false);

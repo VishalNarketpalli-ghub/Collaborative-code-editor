@@ -1,5 +1,6 @@
 import { createBrowserRouter, RouterProvider, Navigate } from "react-router-dom";
 import { useAuth } from "./context/AuthContext";
+import { ToastProvider } from "./context/ToastContext";
 import RootLayout from "./components/layout/RootLayout";
 import Home from "./components/pages/Home";
 import Login from "./components/pages/Login";
@@ -69,7 +70,11 @@ function App() {
         },
     ]);
 
-    return <RouterProvider router={routerObj} />;
+    return (
+        <ToastProvider>
+            <RouterProvider router={routerObj} />
+        </ToastProvider>
+    );
 }
 
 export default App;

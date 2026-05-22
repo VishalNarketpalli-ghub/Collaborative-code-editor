@@ -52,9 +52,12 @@ export const joinRoom = async (req, res) => {
             return res.status(404).json({ message: "Room not found" });
         }
 
-        //Non-host cannot join an ended session
-        if (!room.isActive && room.createdBy.toString() !== userId) {
-            return res.status(403).json({ message: "This session has ended" })
+        // Non-host cannot join an ended session.
+        // We use String() on both sides because room.createdBy is a Mongoose ObjectId
+        // and userId from JWT is a plain string — strict equality would always fail.
+        const isHost = String(room.createdBy) === String(userId);
+        if (!room.isActive && !isHost) {
+            return res.status(403).json({ message: "This session has ended" });
         }
 
         // Validate password.
@@ -66,13 +69,22 @@ export const joinRoom = async (req, res) => {
             return res.status(403).json({ message: "Incorrect room password" });
         }
 
-        // Check if user is banned
-        if (room.bannedUsers && room.bannedUsers.includes(userId)) {
+        // Check if user is banned.
+        // IMPORTANT: bannedUsers contains Mongoose ObjectIds. .includes() uses strict
+        // equality and will NEVER match a plain string userId. We must use .some() with
+        // String() casts on both sides.
+        const isBanned = room.bannedUsers && room.bannedUsers.some(
+            (b) => String(b) === String(userId)
+        );
+        if (isBanned) {
             return res.status(403).json({ message: "You have been banned from this room." });
         }
 
-        // Add user to room participants
-        if (!room.participants.includes(userId)) {
+        // Add user to room participants if not already present.
+        const alreadyParticipant = room.participants.some(
+            (p) => String(p) === String(userId)
+        );
+        if (!alreadyParticipant) {
             room.participants.push(userId);
             await room.save();
         }
@@ -88,6 +100,7 @@ export const joinRoom = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
 
 
 // Get Room Details
@@ -221,7 +234,7 @@ export const deleteRoom = async (req, res) => {
 
         // Host: delete everything
         await ChatMessage.deleteMany({ room: room._id })
-        await CodeFile.deleteOne({ roomId })
+        await CodeFile.deleteMany({ roomId })
         await Room.findByIdAndDelete(room._id)
 
         // Remove from all participants' rooms list

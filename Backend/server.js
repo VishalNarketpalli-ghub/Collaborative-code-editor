@@ -25,7 +25,8 @@ const allowedOrigins = [
 app.use(cors({
     origin: allowedOrigins,
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    // PATCH is required for the reopen-session and end-session endpoints.
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
 }));
 
@@ -48,7 +49,6 @@ server.listen(process.env.PORT, () => {
 
 // dealing with invalid path
 app.use((req, res) => {
-    console.log(req.url);
     res.json({ message: `${req.url} is Invalid path` });
 });
 
