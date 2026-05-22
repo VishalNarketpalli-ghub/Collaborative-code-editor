@@ -1,18 +1,22 @@
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import API from "../../utils/axios";
+import { useToast } from "../../context/ToastContext";
 
 function JoinRoom() {
     const [searchParams] = useSearchParams();
     const [roomId, setRoomId] = useState(searchParams.get("roomId")||"");
     const [roomPwd, setRoomPwd] = useState("");
     const [loading, setLoading] = useState(false);
+    const [validationError, setValidationError] = useState("");
 
     const navigate = useNavigate();
+    const { showToast } = useToast();
 
     const joinRoom = async () => {
         if (!roomId.trim()) {
-            return alert("Room ID is required");
+            setValidationError("Room ID is required");
+            return;
         }
 
         try {
@@ -34,7 +38,7 @@ function JoinRoom() {
             });
         } catch (err) {
             console.error(err);
-            alert(err.response?.data?.message || "Failed to join room");
+            showToast(err.response?.data?.message || "Failed to join room", "error");
         } finally {
             setLoading(false);
         }
@@ -62,12 +66,22 @@ function JoinRoom() {
                     </div>
 
                     <div className="space-y-4">
-                        <input
-                            placeholder="Room ID"
-                            value={roomId}
-                            onChange={(e) => setRoomId(e.target.value)}
-                            className="w-full px-5 py-3 rounded-full bg-gray-900 border border-gray-800 focus:border-blue-500 outline-none"
-                        />
+                        <div>
+                            <input
+                                placeholder="Room ID"
+                                value={roomId}
+                                onChange={(e) => {
+                                    setRoomId(e.target.value);
+                                    if (e.target.value.trim()) setValidationError("");
+                                }}
+                                className={`w-full px-5 py-3 rounded-full bg-gray-900 border ${
+                                    validationError ? "border-red-500 focus:border-red-500" : "border-gray-800 focus:border-blue-500"
+                                } outline-none`}
+                            />
+                            {validationError && (
+                                <p className="text-red-500 text-xs mt-1 ml-4">{validationError}</p>
+                            )}
+                        </div>
 
                         <input
                             type="password"

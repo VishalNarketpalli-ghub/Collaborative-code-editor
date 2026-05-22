@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import API from "../../utils/axios";
 import { getSocket } from "../../socket-files/socket";
+import ConfirmModal from "../ui/ConfirmModal";
 
 // ---------------------------------------------------------------------------
 // File-extension icon mapping — returns an SVG colour class
@@ -83,6 +84,7 @@ function FileExplorer({
     const [renamingFile, setRenamingFile] = useState(null); // filename being renamed
     const [renameValue, setRenameValue] = useState("");
     const [error, setError] = useState("");
+    const [confirmModal, setConfirmModal] = useState({ isOpen: false });
 
     const newFileInputRef = useRef(null);
     const renameInputRef = useRef(null);
@@ -139,28 +141,35 @@ function FileExplorer({
     };
 
     // -- Delete --
-    const handleDelete = async (filename, e) => {
+    const handleDelete = (filename, e) => {
         e.stopPropagation();
-        if (!window.confirm(`Delete "${filename}"? This cannot be undone.`)) return;
+        setConfirmModal({
+            isOpen: true,
+            title: "Delete File",
+            message: `Delete "${filename}"? This cannot be undone.`,
+            confirmText: "Delete",
+            variant: "danger",
+            onConfirm: async () => {
+                try {
+                    await API.delete(`/code/${roomId}/file/${encodeURIComponent(filename)}`);
 
-        try {
-            await API.delete(`/code/${roomId}/file/${encodeURIComponent(filename)}`);
+                    const updated = files.filter((f) => f.filename !== filename);
+                    onFilesChange(updated);
 
-            const updated = files.filter((f) => f.filename !== filename);
-            onFilesChange(updated);
+                    // Notify peers.
+                    getSocket().emit("file_deleted", { roomId, filename });
 
-            // Notify peers.
-            getSocket().emit("file_deleted", { roomId, filename });
-
-            // If the deleted file was active, switch to the first remaining file.
-            if (activeFile === filename && updated.length > 0) {
-                onFileSelect(updated[0].filename);
-            } else if (updated.length === 0) {
-                onFileSelect(null);
+                    // If the deleted file was active, switch to the first remaining file.
+                    if (activeFile === filename && updated.length > 0) {
+                        onFileSelect(updated[0].filename);
+                    } else if (updated.length === 0) {
+                        onFileSelect(null);
+                    }
+                } catch (err) {
+                    setError(err.response?.data?.message || "Failed to delete file");
+                }
             }
-        } catch (err) {
-            setError(err.response?.data?.message || "Failed to delete file");
-        }
+        });
     };
 
     // -- Rename --
@@ -345,6 +354,23 @@ function FileExplorer({
                     {files.length} / {maxFiles} files
                 </div>
             )}
+
+            <ConfirmModal
+                isOpen={confirmModal.isOpen}
+                title={confirmModal.title}
+                message={confirmModal.message}
+                confirmText={confirmModal.confirmText}
+                cancelText={confirmModal.cancelText}
+                variant={confirmModal.variant}
+                onConfirm={() => {
+                    confirmModal.onConfirm?.();
+                    setConfirmModal({ isOpen: false });
+                }}
+                onCancel={() => {
+                    confirmModal.onCancel?.();
+                    setConfirmModal({ isOpen: false });
+                }}
+            />
         </div>
     );
 }

@@ -3,7 +3,7 @@
 // Each open file gets a tab; clicking switches the active file.
 // Non-host users can switch tabs but cannot create or delete files.
 
-function TabBar({ files, activeFile, onTabClick }) {
+function TabBar({ files, activeFile, onTabClick, onTabClose }) {
     if (!files || files.length === 0) return null;
 
     return (
@@ -11,11 +11,19 @@ function TabBar({ files, activeFile, onTabClick }) {
             {files.map((file) => {
                 const isActive = file.filename === activeFile;
                 return (
-                    <button
+                    <div
                         key={file._id || file.filename}
                         className={`tab-item${isActive ? " tab-item--active" : ""}`}
                         onClick={() => onTabClick(file.filename)}
                         title={file.filename}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                onTabClick(file.filename);
+                            }
+                        }}
                     >
                         {/* Coloured language dot */}
                         <span
@@ -24,8 +32,19 @@ function TabBar({ files, activeFile, onTabClick }) {
                         />
                         <span className="tab-label">{file.filename}</span>
 
-                        {/* Active-tab underline indicator rendered via CSS */}
-                    </button>
+                        {/* Close button */}
+                        <button
+                            className="tab-close-btn"
+                            onClick={(e) => onTabClose(file.filename, e)}
+                            title="Close tab"
+                            aria-label={`Close ${file.filename}`}
+                        >
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
+                    </div>
                 );
             })}
         </div>

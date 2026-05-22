@@ -80,6 +80,18 @@ export default function codeSocket(io, socket) {
                 // new joiner can open the same file as everyone else.
                 requestActiveFile: true,
             });
+        } else {
+            // No peers are online — fall back to the last DB-saved content so the
+            // editor is not blank when the user is the sole person in the room.
+            // We emit db_file_sync instead of hijacking request_code_sync so the
+            // client can distinguish between a live-peer sync and a DB snapshot.
+            const dbFiles = await CodeFile.find(
+                { roomId },
+                { filename: 1, content: 1, language: 1 }
+            );
+            if (dbFiles.length > 0) {
+                socket.emit("db_file_sync", { files: dbFiles });
+            }
         }
 
         // Notify everyone else that this user joined.
@@ -198,7 +210,6 @@ export default function codeSocket(io, socket) {
 
     // ── RUN CODE ──────────────────────────────────────────────────────────────
     socket.on("run_code", async ({ roomId, source_code, language, stdin }) => {
-        console.log(`[run_code] roomId=${roomId}, lang=${language}`);
         try {
             io.to(roomId).emit("execution_status", "Running...");
 

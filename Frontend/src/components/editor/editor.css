@@ -85,6 +85,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    /* position:relative so the centered room title can use absolute positioning */
+    position: relative;
     padding: 0 12px;
     height: 44px;
     background: var(--bg-surface);
@@ -117,13 +119,20 @@
     color: var(--text-primary);
 }
 
+/* Room title — centered absolutely so it never competes with left/right groups.
+ * max-width keeps it from overlapping the buttons on small screens. */
 .topbar-room-title {
-    font-size: 12px;
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 13px;
+    font-weight: 500;
     color: var(--text-secondary);
-    max-width: 160px;
+    max-width: 220px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    pointer-events: none; /* does not intercept clicks meant for buttons */
 }
 
 .topbar-active-file {
@@ -163,6 +172,15 @@
     border-color: var(--text-muted);
 }
 
+/* Icon-only variant for the sidebar toggle button */
+.topbar-btn--icon {
+    padding: 4px 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+}
+
 .topbar-btn--primary {
     background: var(--accent-blue-dim);
     border-color: var(--accent-blue);
@@ -178,14 +196,24 @@
 .topbar-btn--save:hover { background: var(--accent-blue-dim); color: #fff; }
 
 .topbar-btn--run {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     background: var(--accent-green-dim);
     border-color: var(--accent-green);
     color: #fff;
 }
 .topbar-btn--run:hover { background: var(--accent-green); }
-.topbar-btn--running { opacity: 0.55; cursor: not-allowed; }
+
+/* Spin the SVG arc while running to give a loading feel */
+.topbar-btn--running svg { animation: spin 0.8s linear infinite; }
+
+.topbar-btn--running { opacity: 0.75; cursor: not-allowed; }
 
 .topbar-btn--danger {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     background: var(--accent-red-dim);
     border-color: var(--accent-red);
     color: #fff;
@@ -223,6 +251,14 @@
     flex-direction: column;
     min-width: 0;
     overflow: hidden;
+    /* Smooth slide animation when collapsing/expanding the sidebar */
+    transition: width 0.2s ease;
+}
+
+/* When collapsed, hide the border and ensure content is invisible */
+.editor-explorer--collapsed {
+    border-right: none;
+    width: 0 !important;
 }
 
 .file-explorer {
@@ -364,11 +400,14 @@
     background: var(--bg-hover);
 }
 
+/* Empty state — color upgraded from --text-muted (#4b5563) to --text-secondary
+ * (#9ca3af) because the darker value has poor contrast on the dark background */
 .fe-empty {
-    padding: 16px 10px;
-    font-size: 11px;
-    color: var(--text-muted);
-    line-height: 1.5;
+    padding: 20px 12px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    text-align: center;
 }
 
 .fe-footer {
@@ -469,6 +508,34 @@
     text-overflow: ellipsis;
 }
 
+.tab-close-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 0;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+    margin-left: 4px;
+    user-select: none;
+}
+.tab-close-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+.tab-close-btn svg {
+    opacity: 0.6;
+    transition: opacity 0.12s;
+}
+.tab-close-btn:hover svg {
+    opacity: 1;
+}
+
 /* ── Right panel ─────────────────────────────────────────────────────────── */
 
 .editor-right-panel {
@@ -490,6 +557,9 @@
 }
 
 .panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     padding: 6px 12px;
     font-size: 10px;
     font-weight: 600;
@@ -652,12 +722,15 @@
 .chat-msg--system {
     text-align: center;
 }
+/* System messages (user joined/left) -- uses a brighter color than --text-muted
+ * so these are clearly visible against the dark chat background. */
 .chat-msg-system-text {
-    font-size: 11px;
-    color: var(--text-muted);
-    background: var(--bg-elevated);
-    padding: 2px 10px;
+    font-size: 11.5px;
+    color: #f1f5f9;
+    background: rgba(30, 36, 51, 0.95);
+    padding: 3px 12px;
     border-radius: 999px;
+    border: 1px solid rgba(75, 85, 99, 0.4);
 }
 .chat-msg-sender {
     color: #60a5fa;
@@ -693,15 +766,17 @@
 .chat-input::placeholder { color: var(--text-muted); }
 
 .chat-send-btn {
-    padding: 6px 12px;
+    padding: 6px 14px;
     background: var(--accent-blue-dim);
     border: 1px solid var(--accent-blue);
     border-radius: 5px;
     color: #fff;
     font-size: 12px;
+    font-weight: 500;
     cursor: pointer;
     flex-shrink: 0;
     transition: background 0.15s;
+    white-space: nowrap;
 }
 .chat-send-btn:hover { background: var(--accent-blue); }
 
@@ -721,4 +796,160 @@
 .output-body::-webkit-scrollbar-thumb {
     background: var(--border-bright);
     border-radius: 2px;
+}
+
+/* ── In-app notification banner ─────────────────────────────────────────── */
+/* Replaces browser alert(). Fixed at top of screen, auto-dismissed after 4s. */
+
+.app-notification {
+    position: fixed;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 18px;
+    border-radius: 0 0 8px 8px;
+    font-size: 13px;
+    font-weight: 500;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+    animation: notif-slide-down 0.2s ease;
+    max-width: 480px;
+    white-space: nowrap;
+}
+
+@keyframes notif-slide-down {
+    from { transform: translateX(-50%) translateY(-100%); opacity: 0; }
+    to   { transform: translateX(-50%) translateY(0);    opacity: 1; }
+}
+
+/* Info: neutral dark pill for non-critical messages (e.g. "Copied") */
+.app-notification--info {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-bright);
+    color: var(--text-primary);
+}
+
+/* Error: red for session-ended, kicked, banned, failed-to-reopen messages */
+.app-notification--error {
+    background: rgba(185, 28, 28, 0.92);
+    border: 1px solid var(--accent-red);
+    color: #fff;
+}
+
+.app-notification-close {
+    background: transparent;
+    border: none;
+    color: inherit;
+    opacity: 0.6;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 2px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+.app-notification-close:hover { opacity: 1; }
+
+/* ── Auto-save status indicator ──────────────────────────────────────────── */
+/* Replaces the old Save button. Shown in the topbar only when status != idle */
+
+.topbar-save-status {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid transparent;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    transition: all 0.2s;
+}
+
+/* Unsaved: orange tint to signal pending changes */
+.topbar-save-status--unsaved {
+    color: #fb923c;
+    border-color: rgba(251, 146, 60, 0.3);
+    background: rgba(251, 146, 60, 0.08);
+}
+
+/* Saving: muted while the request is in-flight */
+.topbar-save-status--saving {
+    color: var(--text-muted);
+    border-color: var(--border);
+    background: var(--bg-elevated);
+}
+
+/* Saved: green flash to confirm write succeeded */
+.topbar-save-status--saved {
+    color: var(--accent-green);
+    border-color: rgba(34, 197, 94, 0.3);
+    background: rgba(34, 197, 94, 0.08);
+}
+
+/* Error: red to indicate the save request failed */
+.topbar-save-status--error {
+    color: var(--accent-red);
+    border-color: rgba(239, 68, 68, 0.3);
+    background: rgba(239, 68, 68, 0.08);
+}
+
+/* ── Topbar Avatars ──────────────────────────────────────────────────────── */
+.topbar-avatars {
+    display: flex;
+    align-items: center;
+    margin-right: 12px;
+    user-select: none;
+}
+
+.topbar-avatar {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid var(--bg-surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    color: #000000;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: transform 0.2s, z-index 0.2s;
+    position: relative;
+    margin-left: -6px;
+}
+
+.topbar-avatar:first-child {
+    margin-left: 0;
+}
+
+.topbar-avatar:hover {
+    transform: scale(1.15) translateY(-2px);
+    z-index: 10;
+}
+
+/* ── Better Output Panel ─────────────────────────────────────────────────── */
+.output-clear-btn {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-hover);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.output-clear-btn:hover {
+    background: var(--bg-elevated);
+    border-color: var(--border-bright);
+    color: var(--text-primary);
+}
+
+.output-body--success {
+    color: var(--accent-green) !important;
 }

@@ -2,9 +2,12 @@ import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
 import API from "../../utils/axios";
+import ConfirmModal from "../ui/ConfirmModal";
+import { useToast } from "../../context/ToastContext";
 
 function Profile() {
     const navigate = useNavigate();
+    const { showToast } = useToast();
 
     // Get user and logout function from global auth context
     const { user, logout, loading } = useAuth();
@@ -17,6 +20,7 @@ function Profile() {
     const [loadingRooms, setLoadingRooms] = useState(false);
     const [deletingRoom, setDeletingRoom] = useState(null); // tracks which room is being deleted
     const [clearingAll, setClearingAll] = useState(false);
+    const [confirmModal, setConfirmModal] = useState({ isOpen: false });
 
     // Fetch rooms history
     useEffect(() => {
@@ -64,42 +68,62 @@ function Profile() {
     const avatarLetter = user?.username?.charAt(0)?.toUpperCase() || "?";
 
     // ── Delete single room ────────────────────────────────────────────────────
-    const handleDeleteRoom = async (room) => {
-        const isCreator = room.createdBy?._id === user?._id;
+    const handleDeleteRoom = (room) => {
+        // Compare as strings: _id from the API can be an ObjectId object,
+        // and user._id from context may also be an object — strict === would always fail.
+        const isCreator = String(room.createdBy?._id) === String(user?._id);
         const confirmMsg = isCreator
             ? `Delete room "${room.title || 'Untitled Room'}"? This will permanently delete the room and all its data for all participants.`
             : `Remove "${room.title || 'Untitled Room'}" from your history?`;
 
-        if (!window.confirm(confirmMsg)) return;
-
-        setDeletingRoom(room.roomId);
-        try {
-            await API.delete(`/room/${room.roomId}`);
-            setRooms((prev) => prev.filter((r) => r.roomId !== room.roomId));
-        } catch (err) {
-            alert(err.response?.data?.message || "Failed to delete room");
-        } finally {
-            setDeletingRoom(null);
-        }
+        setConfirmModal({
+            isOpen: true,
+            title: isCreator ? "Delete Room" : "Remove From History",
+            message: confirmMsg,
+            confirmText: isCreator ? "Delete" : "Remove",
+            variant: "danger",
+            onConfirm: async () => {
+                setDeletingRoom(room.roomId);
+                try {
+                    await API.delete(`/room/${room.roomId}`);
+                    setRooms((prev) => prev.filter((r) => r.roomId !== room.roomId));
+                    showToast(isCreator ? "Room deleted successfully" : "Room removed from history", "success");
+                } catch (err) {
+                    showToast(err.response?.data?.message || "Failed to delete room", "error");
+                } finally {
+                    setDeletingRoom(null);
+                }
+            }
+        });
     };
 
     // ── Clear all history ────────────────────────────────────────────────────
-    const handleClearAll = async () => {
-        if (!window.confirm("Clear all room history? Rooms you hosted will be permanently deleted for all participants. This cannot be undone.")) return;
-
-        setClearingAll(true);
-        try {
-            await API.delete("/room/all");
-            setRooms([]);
-        } catch (err) {
-            alert(err.response?.data?.message || "Failed to clear history");
-        } finally {
-            setClearingAll(false);
-        }
+    const handleClearAll = () => {
+        setConfirmModal({
+            isOpen: true,
+            title: "Clear History",
+            message: "Clear all room history? Rooms you hosted will be permanently deleted for all participants. This cannot be undone.",
+            confirmText: "Clear All",
+            variant: "danger",
+            onConfirm: async () => {
+                setClearingAll(true);
+                try {
+                    await API.delete("/room/all");
+                    setRooms([]);
+                    showToast("Room history cleared successfully", "success");
+                } catch (err) {
+                    showToast(err.response?.data?.message || "Failed to clear history", "error");
+                } finally {
+                    setClearingAll(false);
+                }
+            }
+        });
     };
 
     const handleRejoin = async (room) => {
-        const isCreator = room.createdBy?._id === user?._id;
+        // Same string-comparison fix: ObjectId objects compared with === are never equal
+        // even when they represent the same ID. This was the root cause of the reopen failure.
+        const isCreator = String(room.createdBy?._id) === String(user?._id);
 
         if (!room.isActive && isCreator) {
             try {
@@ -113,7 +137,7 @@ function Profile() {
                     )
                 );
             } catch (err) {
-                alert(err.response?.data?.message || "Failed to reopen session");
+                showToast(err.response?.data?.message || "Failed to reopen session", "error");
                 return;
             }
         }
@@ -234,13 +258,27 @@ function Profile() {
                                 disabled={clearingAll}
                                 className="px-4 py-2 rounded-lg bg-red-900/60 hover:bg-red-800/80 border border-red-700/50 text-red-300 text-sm font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                {clearingAll ? "Clearing..." : "🗑️ Clear All History"}
+                                {clearingAll ? "Clearing..." : "Clear All History"}
                             </button>
                         )}
                     </div>
                     
                     {loadingRooms ? (
-                        <div className="text-gray-400">Loading your history...</div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                            {[1, 2, 3].map((n) => (
+                                <div key={n} className="bg-gray-900 border border-gray-800 p-6 rounded-2xl flex flex-col h-48">
+                                    <div className="flex justify-between items-start mb-6">
+                                        <div className="h-6 w-1/2 bg-gray-800 rounded skeleton" />
+                                        <div className="h-5 w-16 bg-gray-800 rounded skeleton" />
+                                    </div>
+                                    <div className="space-y-3 flex-grow mb-6">
+                                        <div className="h-4 w-full bg-gray-800 rounded skeleton" />
+                                        <div className="h-4 w-3/4 bg-gray-800 rounded skeleton" />
+                                    </div>
+                                    <div className="h-10 w-full bg-gray-800 rounded-xl skeleton mt-auto" />
+                                </div>
+                            ))}
+                        </div>
                     ) : rooms.length === 0 ? (
                         <div className="text-gray-500 bg-gray-900/50 p-6 rounded-xl border border-gray-800 text-center">
                             You haven't joined or created any rooms yet.
@@ -248,7 +286,9 @@ function Profile() {
                     ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
                             {rooms.map((room) => {
-                                const isCreator = room.createdBy?._id === user?._id;
+                                // String comparison so the card correctly labels the host
+                                // and shows the Reopen / Rejoin button with the right label
+                                const isCreator = String(room.createdBy?._id) === String(user?._id);
                                 const isBeingDeleted = deletingRoom === room.roomId;
 
                                 return (
@@ -333,6 +373,22 @@ function Profile() {
                     )}
                 </div>
             </div>
+            <ConfirmModal
+                isOpen={confirmModal.isOpen}
+                title={confirmModal.title}
+                message={confirmModal.message}
+                confirmText={confirmModal.confirmText}
+                cancelText={confirmModal.cancelText}
+                variant={confirmModal.variant}
+                onConfirm={() => {
+                    confirmModal.onConfirm?.();
+                    setConfirmModal({ isOpen: false });
+                }}
+                onCancel={() => {
+                    confirmModal.onCancel?.();
+                    setConfirmModal({ isOpen: false });
+                }}
+            />
         </div>
     );
 }

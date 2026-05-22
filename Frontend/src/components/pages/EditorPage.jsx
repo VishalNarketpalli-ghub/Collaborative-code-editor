@@ -12,6 +12,7 @@ import { useAuth } from "../../context/AuthContext"
 import FileExplorer from "../editor/FileExplorer"
 import TabBar from "../editor/TabBar"
 import "../editor/editor.css"
+import ConfirmModal from "../ui/ConfirmModal"
 
 // Configure Monaco worker URLs once at module level.
 self.MonacoEnvironment = {
@@ -79,6 +80,15 @@ function EditorPage() {
     // current value without needing to be recreated on every state change.
     const activeFileRef = useRef(null)
 
+    // Timer handle for the debounced auto-save (host only).
+    // Stored in a ref so the listener closure always sees the latest handle
+    // without the effect needing to re-register on every keystroke.
+    const autoSaveTimerRef = useRef(null)
+
+    // Whether the component is mounted as host — stored in a ref so the
+    // onDidChangeModelContent closure can read it without a stale capture.
+    const isHostRef = useRef(false)
+
     // ── State ─────────────────────────────────────────────────────────────────
 
     const [room,             setRoom]             = useState(null)
@@ -94,8 +104,24 @@ function EditorPage() {
     const [leftWidth,        setLeftWidth]        = useState(18)  // file-explorer panel width %
     const [editorWidth,      setEditorWidth]      = useState(52)  // editor panel width %
 
+    // Controls whether the file explorer is visible.
+    // When collapsed, the explorer panel width drops to 0 and the editor expands.
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
+    // Auto-save status: 'idle' | 'saving' | 'saved' | 'error'
+    // Displayed in the topbar in place of the old Save button.
+    const [saveStatus,       setSaveStatus]       = useState("idle")
+
+    // In-app notification: replaces browser alert() so we never block the thread.
+    // { message: string, type: 'info' | 'error' } | null
+    const [notification,     setNotification]     = useState(null)
+
+    // State for a single confirmation modal
+    const [confirmModal,     setConfirmModal]     = useState({ isOpen: false })
+
     // File-system state
     const [files,      setFiles]      = useState([])    // list of file metadata objects
+    const [openFiles,  setOpenFiles]  = useState([])    // list of open file names (tabs)
     const [activeFile, setActiveFile] = useState(null)  // currently open filename
 
     const chatEndRef = useRef(null)
@@ -130,6 +156,13 @@ function EditorPage() {
         return () => styleEl.remove()
     }, [])
 
+    // ── Show in-app notification (replaces browser alert) ────────────────────
+    // Displays a non-blocking banner for 4 seconds then clears itself.
+    const showNotification = useCallback((message, type = "info") => {
+        setNotification({ message, type })
+        setTimeout(() => setNotification(null), 4000)
+    }, [])
+
     // ── STEP 1: Fetch room, auto-reopen if needed, validate access ────────────
     useEffect(() => {
         if (!user) return
@@ -138,15 +171,17 @@ function EditorPage() {
             try {
                 const { data: roomData } = await API.get(`/room/${roomId}`)
 
-                const hostId    = roomData.createdBy?._id || roomData.createdBy
+                const hostId     = roomData.createdBy?._id || roomData.createdBy
                 const userIsHost = String(hostId) === String(user?._id)
                 setIsHost(userIsHost)
+                // Keep the ref in sync so the auto-save closure always reads the correct value.
+                isHostRef.current = userIsHost
                 setRoom(roomData)
 
                 // Non-hosts cannot be on an ended session's editor page.
                 if (!roomData.isActive && !userIsHost) {
-                    alert("This session has ended.")
-                    navigate("/profile")
+                    showNotification("This session has ended.", "error")
+                    setTimeout(() => navigate("/profile"), 2500)
                     return
                 }
 
@@ -158,15 +193,15 @@ function EditorPage() {
                     try {
                         await API.patch(`/room/${roomId}/reopen`)
                     } catch (err) {
-                        alert(err.response?.data?.message || "Failed to reopen session")
-                        navigate("/profile")
+                        showNotification(err.response?.data?.message || "Failed to reopen session", "error")
+                        setTimeout(() => navigate("/profile"), 2500)
                         return
                     }
                 }
 
                 // Direct-link / refresh join: if the user is not yet a participant,
                 // join via REST so the socket's participant check passes.
-                const userId       = String(user?._id)
+                const userId        = String(user?._id)
                 const isParticipant = roomData.participants?.some(
                     (p) => String(p._id || p) === userId
                 )
@@ -182,11 +217,12 @@ function EditorPage() {
                 // Load the file list for this room.
                 const { data: fileList } = await API.get(`/code/${roomId}/files`)
                 setFiles(fileList)
+                setOpenFiles(fileList.map(f => f.filename))
 
                 setLoading(false)
             } catch (err) {
                 const msg = err.response?.data?.message
-                if (msg) alert(msg)
+                if (msg) showNotification(msg, "error")
                 console.error("Room init error:", err)
                 navigate("/profile")
             }
@@ -226,10 +262,39 @@ function EditorPage() {
         } catch (err) {
             console.error("Failed to load file content:", err)
         }
-
-        // Notify peers which file is now active (informational, not mandatory).
-        getSocket().emit("active_file_switch", { roomId, filename })
     }, [roomId])
+
+    const stdinRef = useRef(stdin)
+    const activeFileStateRef = useRef(activeFile)
+    const isRunningRef = useRef(isRunning)
+
+    useEffect(() => { stdinRef.current = stdin }, [stdin])
+    useEffect(() => { activeFileStateRef.current = activeFile }, [activeFile])
+    useEffect(() => { isRunningRef.current = isRunning }, [isRunning])
+
+    // Trigger immediate save (host only, Ctrl+S)
+    const triggerImmediateSave = useCallback(async () => {
+        if (!isHostRef.current || !activeFileRef.current || !editorInstance.current) return
+        clearTimeout(autoSaveTimerRef.current)
+        setSaveStatus("saving")
+        try {
+            await API.put(
+                `/code/${roomId}/file/${encodeURIComponent(activeFileRef.current)}`,
+                { content: editorInstance.current.getValue() }
+            )
+            setSaveStatus("saved")
+            showNotification("Saved successfully.", "success")
+            setTimeout(() => setSaveStatus("idle"), 2000)
+        } catch (_err) {
+            setSaveStatus("error")
+        }
+    }, [roomId, showNotification])
+
+    const handleRunRef = useRef(null)
+    const triggerImmediateSaveRef = useRef(triggerImmediateSave)
+    useEffect(() => {
+        triggerImmediateSaveRef.current = triggerImmediateSave
+    }, [triggerImmediateSave])
 
     // ── STEP 2: Init editor + socket listeners ────────────────────────────────
     useEffect(() => {
@@ -253,8 +318,14 @@ function EditorPage() {
             fontLigatures: true,
             tabSize: 4,
             wordWrap: "off",
-            renderLineHighlight: "gutter",
-            cursorSmoothCaretAnimation: "on",
+        })
+
+        // Register keyboard shortcuts inside Monaco editor.
+        editorInstance.current.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+            triggerImmediateSaveRef.current?.()
+        })
+        editorInstance.current.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
+            handleRunRef.current?.()
         })
 
         // Load chat history.
@@ -268,7 +339,7 @@ function EditorPage() {
         }
         loadChatHistory()
 
-        // Broadcast local code edits.
+        // Broadcast local code edits and trigger debounced auto-save (host only).
         editorInstance.current.onDidChangeModelContent(() => {
             if (isRemoteUpdate.current) return
             const code = editorInstance.current.getValue()
@@ -279,6 +350,28 @@ function EditorPage() {
             }
 
             socket.emit("code_change", { roomId, code, filename: activeFileRef.current })
+
+            // Auto-save: only the host can write to the DB, guests are read-only.
+            // We debounce by 2 seconds so rapid keystrokes collapse into a single save.
+            if (!isHostRef.current || !activeFileRef.current) return
+            setSaveStatus("unsaved")
+            clearTimeout(autoSaveTimerRef.current)
+            autoSaveTimerRef.current = setTimeout(async () => {
+                const filename = activeFileRef.current
+                if (!filename) return
+                setSaveStatus("saving")
+                try {
+                    await API.put(
+                        `/code/${roomId}/file/${encodeURIComponent(filename)}`,
+                        { content: editorInstance.current.getValue() }
+                    )
+                    setSaveStatus("saved")
+                    // Clear the "Saved" indicator after 2 seconds of idle time.
+                    setTimeout(() => setSaveStatus("idle"), 2000)
+                } catch (_err) {
+                    setSaveStatus("error")
+                }
+            }, 2000)
         })
 
         // Broadcast local cursor moves.
@@ -344,12 +437,16 @@ function EditorPage() {
         const onCodeSync = ({ code, filename }) => {
             if (!editorInstance.current) return
 
-            // If the peer told us which file they have open, switch to it.
+            // If the peer sent a different active filename, populate the cache first
+            // so that when switchToFile() runs, it finds the content already cached
+            // and does NOT make a DB fetch (which would overwrite the peer's live state).
             if (filename && filename !== activeFileRef.current) {
+                fileContentCache.current[filename] = code || ""
                 switchToFile(filename)
                 return
             }
 
+            // Same file: apply the peer's code directly.
             isRemoteUpdate.current = true
             editorInstance.current.setValue(code || "")
             isRemoteUpdate.current = false
@@ -503,27 +600,49 @@ function EditorPage() {
         // which excludes the sender, which prevents the race condition where both
         // navigate("/profile") and navigate("/room") fire simultaneously).
         const onSessionEnded = () => {
-            alert("The host has ended this session.")
-            navigate("/room")
+            showNotification("The host has ended this session.", "error")
+            setTimeout(() => navigate("/profile"), 2500)
         }
 
         const onKicked = () => {
-            alert("You have been removed from the session by the host.")
-            navigate("/profile")
+            showNotification("You have been removed from the session by the host.", "error")
+            setTimeout(() => navigate("/profile"), 2500)
         }
 
         const onBanned = () => {
-            alert("You have been banned from this session.")
-            navigate("/profile")
+            showNotification("You have been banned from this session.", "error")
+            setTimeout(() => navigate("/profile"), 2500)
         }
 
         // ── File system socket events (from peers/host) ───────────────────────
+
+        // When the user joins and no peers are online, the server emits db_file_sync
+        // with the last-saved content for each file. Populate the in-memory cache
+        // so switchToFile() serves this content without making extra DB requests.
+        const onDbFileSync = ({ files: dbFiles }) => {
+            if (!dbFiles || dbFiles.length === 0) return
+
+            dbFiles.forEach((f) => {
+                fileContentCache.current[f.filename] = f.content || ""
+            })
+
+            // Auto-open the first file if no file is currently active.
+            const firstFile = dbFiles[0]
+            if (firstFile && !activeFileRef.current && editorInstance.current) {
+                switchToFile(firstFile.filename)
+            }
+            setOpenFiles(dbFiles.map(f => f.filename))
+        }
 
         // A new file was created by the host — add it to the local list.
         const onFileCreated = ({ file }) => {
             setFiles((prev) => {
                 if (prev.some((f) => f.filename === file.filename)) return prev
                 return [...prev, file]
+            })
+            setOpenFiles((prev) => {
+                if (prev.includes(file.filename)) return prev
+                return [...prev, file.filename]
             })
         }
 
@@ -550,6 +669,7 @@ function EditorPage() {
 
                 return remaining
             })
+            setOpenFiles((prev) => prev.filter(name => name !== filename))
         }
 
         // A file was renamed by the host.
@@ -560,6 +680,9 @@ function EditorPage() {
                         ? { ...f, filename: newName, language: newLanguage }
                         : f
                 )
+            )
+            setOpenFiles((prev) =>
+                prev.map((name) => name === oldName ? newName : name)
             )
             // Migrate the in-memory cache to the new name.
             if (fileContentCache.current[oldName] !== undefined) {
@@ -590,6 +713,7 @@ function EditorPage() {
         socket.on("session_ended",     onSessionEnded)
         socket.on("kicked",            onKicked)
         socket.on("banned",            onBanned)
+        socket.on("db_file_sync",      onDbFileSync)
         socket.on("file_created",      onFileCreated)
         socket.on("file_deleted",      onFileDeleted)
         socket.on("file_renamed",      onFileRenamed)
@@ -615,6 +739,7 @@ function EditorPage() {
             socket.off("session_ended",     onSessionEnded)
             socket.off("kicked",            onKicked)
             socket.off("banned",            onBanned)
+            socket.off("db_file_sync",      onDbFileSync)
             socket.off("file_created",      onFileCreated)
             socket.off("file_deleted",      onFileDeleted)
             socket.off("file_renamed",      onFileRenamed)
@@ -636,58 +761,60 @@ function EditorPage() {
     }, [messages])
 
     // ── Handlers ──────────────────────────────────────────────────────────────
-
-    // Save the currently active file to DB.
-    const handleSave = async () => {
-        if (!isHost || !editorInstance.current || !activeFile) return
-        try {
-            await API.put(
-                `/code/${roomId}/file/${encodeURIComponent(activeFile)}`,
-                { content: editorInstance.current.getValue() }
-            )
-            // Brief visual feedback without a blocking alert.
-            setOutput((prev) => ({ ...prev, text: `"${activeFile}" saved.`, isError: false }))
-            setTimeout(() => setOutput((prev) =>
-                prev.text === `"${activeFile}" saved.`
-                    ? { text: "Run code to see output...", isError: false }
-                    : prev
-            ), 2000)
-        } catch (err) {
-            alert(err.response?.data?.message || "Save failed")
-        }
-    }
+    // NOTE: The manual handleSave function has been removed.
+    // Saving is now handled automatically by the debounced auto-save inside
+    // onDidChangeModelContent. The topbar Save button has been replaced by
+    // a live save-status indicator.
 
     // Run the code in the currently active file.
-    const handleRun = () => {
-        if (!editorInstance.current || isRunning) return
+    const handleRun = useCallback(() => {
+        if (!editorInstance.current || isRunningRef.current) return
         const code = editorInstance.current.getValue()
         if (!code.trim()) return
 
-        const lang = activeFile ? languageFromFilename(activeFile) : "plaintext"
+        const lang = activeFileStateRef.current ? languageFromFilename(activeFileStateRef.current) : "plaintext"
 
         getSocket().emit("run_code", {
             roomId,
             source_code: code,
             language: lang,
-            stdin
+            stdin: stdinRef.current
         })
         setIsRunning(true)
         setOutput({ text: "Running...", isError: false })
-    }
+    }, [roomId])
+
+    useEffect(() => {
+        handleRunRef.current = handleRun
+    }, [handleRun])
 
     // Host kick / ban
     const handleKick = (targetUserId, targetUsername) => {
         if (!isHost) return
-        if (window.confirm(`Remove ${targetUsername} from the room?`)) {
-            getSocket().emit("kick_user", { roomId, targetUserId })
-        }
+        setConfirmModal({
+            isOpen: true,
+            title: "Remove User",
+            message: `Remove ${targetUsername} from the room?`,
+            confirmText: "Remove",
+            variant: "danger",
+            onConfirm: () => {
+                getSocket().emit("kick_user", { roomId, targetUserId })
+            }
+        })
     }
 
     const handleBan = (targetUserId, targetUsername) => {
         if (!isHost) return
-        if (window.confirm(`Ban ${targetUsername}? They will not be able to rejoin.`)) {
-            getSocket().emit("ban_user", { roomId, targetUserId })
-        }
+        setConfirmModal({
+            isOpen: true,
+            title: "Ban User",
+            message: `Ban ${targetUsername}? They will not be able to rejoin.`,
+            confirmText: "Ban",
+            variant: "danger",
+            onConfirm: () => {
+                getSocket().emit("ban_user", { roomId, targetUserId })
+            }
+        })
     }
 
     // Send a chat message.
@@ -707,16 +834,26 @@ function EditorPage() {
     // Copy room link to clipboard.
     const copyRoomLink = () => {
         navigator.clipboard.writeText(window.location.href)
-        alert("Room link copied!")
+        showNotification("Room link copied to clipboard.", "info")
     }
 
     // End session — host only. The socket handler broadcasts session_ended to
     // peers only (not the host) so the host's navigate() is not overwritten.
+    // Files are saved automatically by the debounced auto-save, so no
+    // manual-save reminder is needed before ending.
     const handleEndSession = async () => {
         if (!isHost) return
-        if (!window.confirm("Have you saved your files? Click OK to end the session.")) return
-        getSocket().emit("end_session", { roomId })
-        navigate("/profile")
+        setConfirmModal({
+            isOpen: true,
+            title: "End Session",
+            message: "End the session? All participants will be disconnected.",
+            confirmText: "End Session",
+            variant: "danger",
+            onConfirm: () => {
+                getSocket().emit("end_session", { roomId })
+                navigate("/profile")
+            }
+        })
     }
 
     const handleLeaveRoom = () => {
@@ -726,14 +863,55 @@ function EditorPage() {
 
     // ── File explorer callbacks ────────────────────────────────────────────────
     const handleFileSelect = useCallback((filename) => {
-        if (filename && filename !== activeFileRef.current) {
-            switchToFile(filename)
+        if (filename) {
+            setOpenFiles((prev) => {
+                if (prev.includes(filename)) return prev
+                return [...prev, filename]
+            })
+            if (filename !== activeFileRef.current) {
+                switchToFile(filename)
+            }
+        } else {
+            activeFileRef.current = null
+            setActiveFile(null)
+            if (editorInstance.current) {
+                isRemoteUpdate.current = true
+                editorInstance.current.setValue("")
+                isRemoteUpdate.current = false
+            }
         }
     }, [switchToFile])
 
     const handleFilesChange = useCallback((updatedFiles) => {
         setFiles(updatedFiles)
+        setOpenFiles((prev) => prev.filter(name => updatedFiles.some(f => f.filename === name)))
     }, [])
+
+    const handleTabClose = useCallback((filename, e) => {
+        e.stopPropagation()
+        setOpenFiles((prev) => {
+            const next = prev.filter(name => name !== filename)
+            if (activeFileRef.current === filename) {
+                if (next.length > 0) {
+                    const closedIndex = prev.indexOf(filename)
+                    const newActiveIndex = Math.min(closedIndex, next.length - 1)
+                    const newActive = next[newActiveIndex]
+                    setTimeout(() => {
+                        switchToFile(newActive)
+                    }, 0)
+                } else {
+                    activeFileRef.current = null
+                    setActiveFile(null)
+                    if (editorInstance.current) {
+                        isRemoteUpdate.current = true
+                        editorInstance.current.setValue("")
+                        isRemoteUpdate.current = false
+                    }
+                }
+            }
+            return next
+        })
+    }, [switchToFile])
 
     // ── Drag handles ──────────────────────────────────────────────────────────
 
@@ -776,34 +954,92 @@ function EditorPage() {
     }
 
     // ── Render ────────────────────────────────────────────────────────────────
-    const rightPanelWidth = 100 - leftWidth - editorWidth
+    // When the sidebar is collapsed, the explorer width is 0 so the editor
+    // panel absorbs the leftWidth space that was freed up.
+    const effectiveLeftWidth  = sidebarCollapsed ? 0 : leftWidth
+    const effectiveEditorWidth = editorWidth + (leftWidth - effectiveLeftWidth)
+    const rightPanelWidth = 100 - effectiveLeftWidth - effectiveEditorWidth
 
     return (
         <div className="editor-root">
 
+            {/* ── IN-APP NOTIFICATION OVERLAY ─────────────────────────── */}
+            {/* Replaces browser alert() — appears at the top and auto-dismisses. */}
+            {notification && (
+                <div className={`app-notification app-notification--${notification.type}`}>
+                    {notification.message}
+                    <button
+                        className="app-notification-close"
+                        onClick={() => setNotification(null)}
+                    >
+                        x
+                    </button>
+                </div>
+            )}
+
             {/* ── TOP BAR ────────────────────────────────────────────────── */}
             <div className="editor-topbar">
 
-                {/* Left: room ID + copy buttons */}
+                {/* Left: sidebar toggle + room ID + copy buttons */}
                 <div className="topbar-left">
+                    {/* Sidebar collapse toggle — chevron flips when collapsed */}
+                    <button
+                        className="topbar-btn topbar-btn--icon"
+                        onClick={() => setSidebarCollapsed((c) => !c)}
+                        title={sidebarCollapsed ? "Show file explorer" : "Hide file explorer"}
+                    >
+                        {/* Left-facing chevron, rotated 180deg when collapsed */}
+                        <svg
+                            width="14" height="14" viewBox="0 0 24 24"
+                            fill="none" stroke="currentColor" strokeWidth="2"
+                            strokeLinecap="round" strokeLinejoin="round"
+                            style={{ transform: sidebarCollapsed ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}
+                        >
+                            <polyline points="15 18 9 12 15 6" />
+                        </svg>
+                    </button>
+
                     <span className="topbar-label">Room</span>
                     <code className="topbar-room-id">{roomId}</code>
                     <button
                         className="topbar-btn"
-                        onClick={() => { navigator.clipboard.writeText(roomId); alert("Room ID copied!") }}
+                        onClick={() => {
+                            navigator.clipboard.writeText(roomId)
+                            showNotification("Room ID copied.", "info")
+                        }}
                     >
                         Copy ID
                     </button>
                     <button className="topbar-btn topbar-btn--primary" onClick={copyRoomLink}>
                         Copy Link
                     </button>
-                    {room?.title && (
-                        <span className="topbar-room-title">{room.title}</span>
-                    )}
                 </div>
+
+                {/* Center: room title — absolute so it doesn't push left/right groups */}
+                {room?.title && (
+                    <span className="topbar-room-title">{room.title}</span>
+                )}
 
                 {/* Right: action buttons */}
                 <div className="topbar-right">
+                    {/* Avatars */}
+                    <div className="topbar-avatars">
+                        {participants.map((p) => {
+                            const initial = p.username ? p.username[0] : "?";
+                            const color = getUserColor(p.userId);
+                            return (
+                                <div
+                                    key={p.userId}
+                                    className="topbar-avatar"
+                                    style={{ backgroundColor: color }}
+                                    title={p.username}
+                                >
+                                    {initial}
+                                </div>
+                            );
+                        })}
+                    </div>
+
                     {activeFile && (
                         <span className="topbar-active-file">
                             {activeFile}
@@ -813,17 +1049,34 @@ function EditorPage() {
                         </span>
                     )}
 
-                    {isHost && (
-                        <button className="topbar-btn topbar-btn--save" onClick={handleSave}>
-                            Save
-                        </button>
+                    {/* Auto-save status indicator (host only, replaces manual Save button). */}
+                    {isHost && saveStatus !== "idle" && (
+                        <span className={`topbar-save-status topbar-save-status--${saveStatus}`}>
+                            {saveStatus === "unsaved" && "Unsaved"}
+                            {saveStatus === "saving"  && "Saving..."}
+                            {saveStatus === "saved"   && "Saved"}
+                            {saveStatus === "error"   && "Save failed"}
+                        </span>
                     )}
 
+                    {/* Run button with play icon */}
                     <button
                         className={`topbar-btn topbar-btn--run${isRunning ? " topbar-btn--running" : ""}`}
                         onClick={handleRun}
                         disabled={isRunning}
                     >
+                        {isRunning ? (
+                            /* Animated spinner dots while running */
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                                <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
+                                <path d="M12 2a10 10 0 0 1 10 10" />
+                            </svg>
+                        ) : (
+                            /* Static play triangle when idle */
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                                <polygon points="5,3 19,12 5,21" />
+                            </svg>
+                        )}
                         {isRunning ? "Running..." : "Run"}
                     </button>
 
@@ -833,8 +1086,13 @@ function EditorPage() {
                         </button>
                     )}
 
+                    {/* End Session button with stop icon */}
                     {isHost && (
                         <button className="topbar-btn topbar-btn--danger" onClick={handleEndSession}>
+                            {/* Stop square icon */}
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
+                                <rect x="3" y="3" width="18" height="18" rx="2" />
+                            </svg>
                             End Session
                         </button>
                     )}
@@ -844,8 +1102,11 @@ function EditorPage() {
             {/* ── MAIN LAYOUT ────────────────────────────────────────────── */}
             <div className="editor-body">
 
-                {/* FILE EXPLORER */}
-                <div className="editor-explorer" style={{ width: `${leftWidth}%` }}>
+                {/* FILE EXPLORER — width drops to 0 when sidebar is collapsed */}
+                <div
+                    className={`editor-explorer${sidebarCollapsed ? " editor-explorer--collapsed" : ""}`}
+                    style={{ width: sidebarCollapsed ? 0 : `${leftWidth}%` }}
+                >
                     <FileExplorer
                         roomId={roomId}
                         files={files}
@@ -857,16 +1118,19 @@ function EditorPage() {
                     />
                 </div>
 
-                {/* DRAG: explorer / editor */}
-                <div className="editor-drag-handle" onMouseDown={startLeftDrag} />
+                {/* DRAG: explorer / editor — hidden when sidebar is collapsed */}
+                {!sidebarCollapsed && (
+                    <div className="editor-drag-handle" onMouseDown={startLeftDrag} />
+                )}
 
-                {/* EDITOR PANEL */}
-                <div className="editor-panel" style={{ width: `${editorWidth}%` }}>
+                {/* EDITOR PANEL — expands when sidebar is collapsed */}
+                <div className="editor-panel" style={{ width: `${effectiveEditorWidth}%` }}>
                     {/* Tab bar */}
                     <TabBar
-                        files={files}
+                        files={files.filter(f => openFiles.includes(f.filename))}
                         activeFile={activeFile}
                         onTabClick={handleFileSelect}
+                        onTabClose={handleTabClose}
                     />
 
                     {/* Monaco mount point — always in the DOM so the ref stays stable.
@@ -894,8 +1158,19 @@ function EditorPage() {
 
                     {/* Output + stdin */}
                     <div className="output-panel">
-                        <div className="panel-header">Output</div>
-                        <div className={`output-body${output.isError ? " output-body--error" : ""}`}>
+                        <div className="panel-header">
+                            <span>Output</span>
+                            {output.text !== "Run code to see output..." && (
+                                <button
+                                    className="output-clear-btn"
+                                    onClick={() => setOutput({ text: "Run code to see output...", isError: false })}
+                                    title="Clear output"
+                                >
+                                    Clear
+                                </button>
+                            )}
+                        </div>
+                        <div className={`output-body${output.isError ? " output-body--error" : ""}${(!output.isError && output.text !== "Run code to see output..." && output.text !== "(no output)") ? " output-body--success" : ""}`}>
                             {output.text}
                         </div>
                         <div className="panel-subheader">stdin</div>
@@ -964,7 +1239,10 @@ function EditorPage() {
                                         <span className="chat-msg-system-text">{msg.message}</span>
                                     ) : (
                                         <>
-                                            <span className="chat-msg-sender">
+                                            <span
+                                                className="chat-msg-sender"
+                                                style={{ color: getUserColor(msg.sender?._id || msg.sender) }}
+                                            >
                                                 {msg.sender?.username || "User"}:&nbsp;
                                             </span>
                                             <span className="chat-msg-body">{msg.message}</span>
@@ -991,6 +1269,22 @@ function EditorPage() {
                     </div>
                 </div>
             </div>
+            <ConfirmModal
+                isOpen={confirmModal.isOpen}
+                title={confirmModal.title}
+                message={confirmModal.message}
+                confirmText={confirmModal.confirmText}
+                cancelText={confirmModal.cancelText}
+                variant={confirmModal.variant}
+                onConfirm={() => {
+                    confirmModal.onConfirm?.();
+                    setConfirmModal({ isOpen: false });
+                }}
+                onCancel={() => {
+                    confirmModal.onCancel?.();
+                    setConfirmModal({ isOpen: false });
+                }}
+            />
         </div>
     )
 }
